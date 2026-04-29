@@ -238,6 +238,8 @@ let timer        = null;
 const phoneToTarget = {};
 const targetCaps    = {};
 const dialpadStatus = {};
+const targetIdToName = {};   // populated from /retreaver/targets — call.system_target_id → target.name
+const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
 
 // Admin overrides — keyed by Retreaver target id; value 'paused' or 'unpaused'.
 // While set, the auto-pause loop skips that target so manual state sticks.
@@ -423,7 +425,15 @@ function normalizePhone(p) {
 function updateDialpadBar() {
   const bar    = document.getElementById('dialpadBar');
   const agents = document.getElementById('dialpadAgents');
-  const entries = Object.values(dialpadStatus);
+  // dialpadStatus is keyed by both nameKey AND each phone, so Object.values has duplicates.
+  // Dedupe by Dialpad userId so we render one pill per agent.
+  const seen = new Set();
+  const entries = Object.values(dialpadStatus).filter(a => {
+    const key = a.userId || a.name || a.phone;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   if (entries.length === 0) { bar.classList.remove('active'); return; }
   bar.classList.add('active');
   agents.innerHTML = entries.map(a => {
@@ -445,13 +455,15 @@ function processCalls(calls, start, end) {
   });
 
   calls.forEach(call => {
-    const s     = (call.status || '').toLowerCase().trim();
-    const agent = call.tid || null;
+    const s        = (call.status || '').toLowerCase().trim();
+    const sysId    = call.system_target_id;
+    // tid is null on most Retreaver setups; fall back to target name from our map
+    const agent    = call.tid || (sysId ? targetIdToName[sysId] : null) || null;
     statusCount[s] = (statusCount[s]||0) + 1;
 
-    if (call.dialed_number && call.system_target_id && agent) {
+    if (call.dialed_number && sysId && agent) {
       const phone = normalizePhone(call.dialed_number);
-      phoneToTarget[phone] = { targetId: call.system_target_id, name: agent };
+      phoneToTarget[phone] = { targetId: sysId, name: agent };
     }
 
     if (CAMPAIGN_KEY && call.system_campaign_id && call.campaign_key && call.campaign_key !== CAMPAIGN_KEY) return;
@@ -730,6 +742,17 @@ async function fetchTargetCaps() {
           concurrency:  t.concurrency_cap || null,
           inProgress:   t.calls_in_progress || 0,
         };
+        // Build the id→name + id→phone maps used as fallback when call.tid is null
+        if (t.id) {
+          targetIdToName[t.id]  = t.name || t.tid || `Target ${t.id}`;
+          targetIdToPhone[t.id] = normalizePhone(t.number || '');
+          // Also seed phoneToTarget here so the auto-pause loop can find targets
+          // even before any calls have come in (otherwise it only learns from call records)
+          const p = normalizePhone(t.number || '');
+          if (p && !phoneToTarget[p]) {
+            phoneToTarget[p] = { targetId: t.id, name: targetIdToName[t.id] };
+          }
+        }
       });
 
       if (targets.length < 25) break;
