@@ -500,6 +500,18 @@ function processCalls(calls, start, end) {
     if (isReceivable && dur >= 90) { a.answered++; totAnswered++; }
   });
 
+  // Ensure every known Retreaver target has a row, even if it had 0 calls in this period.
+  // This way all 4 agents appear with the admin override toggle even on a quiet day.
+  Object.entries(targetIdToName).forEach(([targetId, name]) => {
+    if (!agents[name]) {
+      agents[name] = {
+        name, total:0, unique:0, callers:new Set(),
+        answered:0, live:0, dur:0,
+        dialedNumber: targetIdToPhone[targetId] || ''
+      };
+    }
+  });
+
   allAgents    = Object.values(agents).sort((a,b) => b.total - a.total);
   notSoldCount = totNotSold;
 
