@@ -168,19 +168,25 @@
     <table>
       <thead>
         <tr>
+          <th colspan="4" style="background:var(--surface2);font-style:italic;">Agent</th>
+          <th colspan="6" class="r" style="background:rgba(0,229,160,0.04);font-style:italic;">Retreaver (paid 866 only)</th>
+          <th colspan="3" class="r" style="background:rgba(96,165,250,0.04);font-style:italic;">Dialpad (all inbound)</th>
+          <th>&nbsp;</th>
+        </tr>
+        <tr>
           <th>#</th>
           <th>Agent / buyer</th>
           <th>Available</th>
           <th>Admin override</th>
           <th class="r">Total calls</th>
-          <th class="r">Unique calls</th>
+          <th class="r">Unique callers</th>
           <th class="r">Answered</th>
-          <th class="r">Missed (Dialpad)</th>
           <th class="r">Live now</th>
           <th class="r">Answer rate</th>
           <th class="r">Daily cap</th>
-          <th class="r">Total duration</th>
-          <th>Volume</th>
+          <th class="r">Rings</th>
+          <th class="r">Answered</th>
+          <th class="r">Missed</th>
           <th class="r">Status</th>
         </tr>
       </thead>
@@ -615,15 +621,15 @@ function renderTable() {
       overrideCell = `<button class="ovr-btn auto" onclick="setOverride(${targetId},'paused')">auto · click to pause</button>`;
     }
 
-    // Missed-call cell from Dialpad — look up agent's Dialpad userId via dialpadStatus
+    // Dialpad stats — look up agent's Dialpad userId via dialpadStatus
     const dpUserId = dp ? dp.userId : null;
-    const dpStats = dpUserId ? dialpadCallStats[String(dpUserId)] : null;
-    const missedCount = dpStats ? dpStats.missed : null;
-    const missedCell = missedCount === null
-      ? '<span class="vm">—</span>'
-      : missedCount > 0
-        ? `<span class="vr">${missedCount}</span>`
-        : '<span class="vm">0</span>';
+    const dpStats  = dpUserId ? dialpadCallStats[String(dpUserId)] : null;
+    const dpRings    = dpStats ? dpStats.rings    : null;
+    const dpAnswered = dpStats ? dpStats.answered : null;
+    const dpMissed   = dpStats ? dpStats.missed   : null;
+    const ringsCell    = dpRings    === null ? '<span class="vm">—</span>' : `<span class="vm">${dpRings}</span>`;
+    const dpAnsCell    = dpAnswered === null ? '<span class="vm">—</span>' : (dpAnswered > 0 ? `<span class="vg">${dpAnswered}</span>` : '<span class="vm">0</span>');
+    const dpMissedCell = dpMissed   === null ? '<span class="vm">—</span>' : (dpMissed   > 0 ? `<span class="vr">${dpMissed}</span>`   : '<span class="vm">0</span>');
 
     rows += `<tr${rowClass}>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${rank}</td>
@@ -633,12 +639,12 @@ function renderTable() {
       <td class="r vm">${a.total.toLocaleString()}</td>
       <td class="r vg">${a.unique.toLocaleString()}</td>
       <td class="r vg">${a.answered.toLocaleString()}</td>
-      <td class="r">${missedCell}</td>
       <td class="r vb">${a.live>0?a.live:'<span class="vm">—</span>'}</td>
       <td class="r ${rClass}">${rate}%</td>
       <td class="r vm">${capCell(a)}</td>
-      <td class="r vm">${fmtDur(a.dur)}</td>
-      <td style="min-width:80px;padding-right:14px;"><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
+      <td class="r">${ringsCell}</td>
+      <td class="r">${dpAnsCell}</td>
+      <td class="r">${dpMissedCell}</td>
       <td class="r">${badge}</td>
     </tr>`;
   });
@@ -651,10 +657,9 @@ function renderTable() {
       <td class="vm">—</td>
       <td class="vm">—</td>
       <td class="r vr">${notSoldCount.toLocaleString()}</td>
-      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
+      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
       <td class="r vm">—</td><td class="r vm">—</td>
-      <td class="r vm">—</td>
-      <td style="min-width:80px;padding-right:14px;"><div class="bar-bg"></div></td>
+      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
       <td class="r"><span class="badge br">Not sold</span></td>
     </tr>`;
   }
