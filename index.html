@@ -175,6 +175,7 @@
           <th class="r">Total calls</th>
           <th class="r">Unique calls</th>
           <th class="r">Answered</th>
+          <th class="r">Missed (Dialpad)</th>
           <th class="r">Live now</th>
           <th class="r">Answer rate</th>
           <th class="r">Daily cap</th>
@@ -184,7 +185,7 @@
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="13" class="no-data">Loading...</td></tr>
+        <tr><td colspan="14" class="no-data">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -240,6 +241,7 @@ const targetCaps    = {};
 const dialpadStatus = {};
 const targetIdToName = {};   // populated from /retreaver/targets — call.system_target_id → target.name
 const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
+const dialpadCallStats = {}; // populated from /dialpad/calls — Dialpad userId → {rings, answered, missed}
 
 // Admin overrides — keyed by Retreaver target id; value 'paused' or 'unpaused'.
 // While set, the auto-pause loop skips that target so manual state sticks.
@@ -613,6 +615,16 @@ function renderTable() {
       overrideCell = `<button class="ovr-btn auto" onclick="setOverride(${targetId},'paused')">auto · click to pause</button>`;
     }
 
+    // Missed-call cell from Dialpad — look up agent's Dialpad userId via dialpadStatus
+    const dpUserId = dp ? dp.userId : null;
+    const dpStats = dpUserId ? dialpadCallStats[String(dpUserId)] : null;
+    const missedCount = dpStats ? dpStats.missed : null;
+    const missedCell = missedCount === null
+      ? '<span class="vm">—</span>'
+      : missedCount > 0
+        ? `<span class="vr">${missedCount}</span>`
+        : '<span class="vm">0</span>';
+
     rows += `<tr${rowClass}>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${rank}</td>
       <td><div class="aname">${esc(a.name)}</div></td>
@@ -621,6 +633,7 @@ function renderTable() {
       <td class="r vm">${a.total.toLocaleString()}</td>
       <td class="r vg">${a.unique.toLocaleString()}</td>
       <td class="r vg">${a.answered.toLocaleString()}</td>
+      <td class="r">${missedCell}</td>
       <td class="r vb">${a.live>0?a.live:'<span class="vm">—</span>'}</td>
       <td class="r ${rClass}">${rate}%</td>
       <td class="r vm">${capCell(a)}</td>
@@ -631,14 +644,14 @@ function renderTable() {
   });
 
   if (!search) {
-    rows += `<tr class="div-row"><td colspan="13">Not sold — no agent reached</td></tr>`;
+    rows += `<tr class="div-row"><td colspan="14">Not sold — no agent reached</td></tr>`;
     rows += `<tr class="ns-row">
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">—</td>
       <td><div class="aname" style="color:var(--red);font-size:13px;">No answer / No buyer / No target</div></td>
       <td class="vm">—</td>
       <td class="vm">—</td>
       <td class="r vr">${notSoldCount.toLocaleString()}</td>
-      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
+      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
       <td class="r vm">—</td><td class="r vm">—</td>
       <td class="r vm">—</td>
       <td style="min-width:80px;padding-right:14px;"><div class="bar-bg"></div></td>
@@ -647,7 +660,7 @@ function renderTable() {
   }
 
   document.getElementById('tbody').innerHTML =
-    rows || `<tr><td colspan="13" class="no-data">No agents found.</td></tr>`;
+    rows || `<tr><td colspan="14" class="no-data">No agents found.</td></tr>`;
 }
 
 // ─── Admin override controls ────────────────────────────────────────────────
@@ -732,6 +745,48 @@ async function testRetreaverPause() {
   setTimeout(() => { btn.textContent = 'Pause unavailable now'; btn.disabled = false; }, 5000);
 }
 
+// ─── Dialpad: aggregate per-user inbound ring/answer/miss counts ─────────────
+// Used for the "Missed (Dialpad)" column. Dialpad logs every ring, so this
+// catches failover misses Retreaver collapses into a single call record.
+async function fetchDialpadCallStats() {
+  const { start, end } = getRange(document.getElementById('rangeSelect').value);
+  // Dialpad rejects started_before in the future — cap to now()
+  const startMs = new Date(start + 'T00:00:00Z').getTime();
+  const endMs   = Math.min(new Date(end + 'T23:59:59Z').getTime(), Date.now());
+
+  // Reset
+  Object.keys(dialpadCallStats).forEach(k => delete dialpadCallStats[k]);
+
+  let cursor = null;
+  let pages = 0;
+  try {
+    while (pages < 100) {
+      const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+      const res = await authedFetch(`/dialpad/calls?started_after=${startMs}&started_before=${endMs}${cursorParam}`);
+      if (!res.ok) break;
+      const json = await res.json();
+      const items = json.items || [];
+      items.forEach(c => {
+        if (c.direction !== 'inbound') return;
+        const t = c.target || {};
+        if (t.type !== 'user' || !t.id) return;
+        const uid = String(t.id);
+        if (!dialpadCallStats[uid]) {
+          dialpadCallStats[uid] = { name: t.name || '', rings: 0, answered: 0, missed: 0 };
+        }
+        dialpadCallStats[uid].rings++;
+        if (c.date_connected) dialpadCallStats[uid].answered++;
+        else dialpadCallStats[uid].missed++;
+      });
+      cursor = json.cursor || null;
+      pages++;
+      if (!cursor || items.length === 0) break;
+    }
+  } catch (e) {
+    console.warn('fetchDialpadCallStats failed:', e.message);
+  }
+}
+
 async function fetchTargetCaps() {
   try {
     let page = 1;
@@ -812,7 +867,7 @@ async function fetchData() {
     document.getElementById('statusText').textContent = 'Setup required';
     document.getElementById('statusText').className = 'st err';
     document.getElementById('dot').className = 'brand-dot error';
-    document.getElementById('tbody').innerHTML = `<tr><td colspan="13" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
+    document.getElementById('tbody').innerHTML = `<tr><td colspan="14" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
     return;
   }
 
@@ -830,6 +885,7 @@ async function fetchData() {
   try {
     const { calls, start, end } = await fetchAllPages();
     await fetchTargetCaps();
+    await fetchDialpadCallStats();
     processCalls(calls, start, end);
     dot.className='brand-dot live'; st.className='st live';
     st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
@@ -841,7 +897,7 @@ async function fetchData() {
       Verify <code>worker</code> and <code>token</code> in the URL match your Cloudflare deploy.
       Try <code>${esc(WORKER_URL)}/healthz</code> in a new tab.`;
     document.getElementById('tbody').innerHTML=
-      `<tr><td colspan="13" class="no-data">No data loaded.</td></tr>`;
+      `<tr><td colspan="14" class="no-data">No data loaded.</td></tr>`;
   } finally {
     load.style.display='none';
   }
