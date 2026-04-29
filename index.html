@@ -75,6 +75,15 @@
   .dp-unknown     { background:rgba(255,255,255,0.05); color:var(--muted); border:1px solid var(--border); }
   .dp-unknown .dot { background:var(--muted); }
 
+  /* Admin override pills */
+  .ovr-btn { display:inline-flex; align-items:center; gap:5px; border-radius:99px; padding:3px 10px; font-family:var(--font-mono); font-size:10px; white-space:nowrap; cursor:pointer; border:1px solid var(--border2); background:transparent; color:var(--muted); transition:all 0.15s; }
+  .ovr-btn:hover { color:var(--text); border-color:var(--accent); }
+  .ovr-btn.auto { color:var(--muted); }
+  .ovr-btn.paused { color:var(--red); border-color:rgba(239,68,68,0.4); background:rgba(239,68,68,0.08); }
+  .ovr-btn.unpaused { color:var(--accent); border-color:rgba(0,229,160,0.4); background:rgba(0,229,160,0.08); }
+  .ovr-btn .x { color:var(--muted); margin-left:4px; cursor:pointer; }
+  .ovr-btn .x:hover { color:var(--red); }
+
   .bar-bg { background:rgba(255,255,255,0.06); border-radius:99px; height:4px; min-width:60px; }
   .bar-fill { background:var(--accent); border-radius:99px; height:4px; opacity:0.75; transition:width 0.5s; }
   .vg{color:var(--accent);font-weight:500;} .vr{color:var(--red);font-weight:500;}
@@ -162,6 +171,7 @@
           <th>#</th>
           <th>Agent / buyer</th>
           <th>Available</th>
+          <th>Admin override</th>
           <th class="r">Total calls</th>
           <th class="r">Unique calls</th>
           <th class="r">Answered</th>
@@ -174,7 +184,7 @@
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="12" class="no-data">Loading...</td></tr>
+        <tr><td colspan="13" class="no-data">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -228,6 +238,17 @@ let timer        = null;
 const phoneToTarget = {};
 const targetCaps    = {};
 const dialpadStatus = {};
+
+// Admin overrides — keyed by Retreaver target id; value 'paused' or 'unpaused'.
+// While set, the auto-pause loop skips that target so manual state sticks.
+// Persisted to localStorage so overrides survive reload.
+const manualOverrides = (() => {
+  try { return JSON.parse(localStorage.getItem('ff_manual_overrides') || '{}'); }
+  catch (e) { return {}; }
+})();
+function saveOverrides() {
+  localStorage.setItem('ff_manual_overrides', JSON.stringify(manualOverrides));
+}
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 function authedFetch(path, init) {
@@ -361,6 +382,11 @@ async function fetchDialpadStatuses() {
         dpDebug += `    ${phone} -> ${name} (${dpStatusVal})\n`;
         const target = phoneToTarget[phone];
         if (target) {
+          // Admin override: skip auto-pause for any target with a manual override
+          if (manualOverrides[target.targetId]) {
+            dpDebug += `    SKIP — admin override active (${manualOverrides[target.targetId]}) for target ${target.targetId}\n`;
+            return;
+          }
           retreaverPauses.push({ targetId: target.targetId, name: target.name, shouldPause: !isAvailable, phone });
         }
       });
@@ -548,10 +574,26 @@ function renderTable() {
     }
     if (isLive) rowClass = ' class="on-call"';
 
+    // Admin override button — pulls targetId from phoneToTarget map
+    const targetEntry = phoneToTarget[a.dialedNumber];
+    const targetId = targetEntry ? targetEntry.targetId : null;
+    const overrideState = targetId ? manualOverrides[targetId] : null;
+    let overrideCell;
+    if (!targetId) {
+      overrideCell = '<span class="vm" style="font-size:10px;font-family:var(--font-mono);">—</span>';
+    } else if (overrideState === 'paused') {
+      overrideCell = `<button class="ovr-btn paused" onclick="setOverride(${targetId},'unpaused')">⏸ FORCED PAUSED <span class="x" onclick="event.stopPropagation();clearOverride(${targetId})">×</span></button>`;
+    } else if (overrideState === 'unpaused') {
+      overrideCell = `<button class="ovr-btn unpaused" onclick="setOverride(${targetId},'paused')">▶ FORCED ACTIVE <span class="x" onclick="event.stopPropagation();clearOverride(${targetId})">×</span></button>`;
+    } else {
+      overrideCell = `<button class="ovr-btn auto" onclick="setOverride(${targetId},'paused')">auto · click to pause</button>`;
+    }
+
     rows += `<tr${rowClass}>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${rank}</td>
       <td><div class="aname">${esc(a.name)}</div></td>
       <td>${dpPill}</td>
+      <td>${overrideCell}</td>
       <td class="r vm">${a.total.toLocaleString()}</td>
       <td class="r vg">${a.unique.toLocaleString()}</td>
       <td class="r vg">${a.answered.toLocaleString()}</td>
@@ -565,21 +607,40 @@ function renderTable() {
   });
 
   if (!search) {
-    rows += `<tr class="div-row"><td colspan="12">Not sold — no agent reached</td></tr>`;
+    rows += `<tr class="div-row"><td colspan="13">Not sold — no agent reached</td></tr>`;
     rows += `<tr class="ns-row">
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">—</td>
       <td><div class="aname" style="color:var(--red);font-size:13px;">No answer / No buyer / No target</div></td>
       <td class="vm">—</td>
+      <td class="vm">—</td>
       <td class="r vr">${notSoldCount.toLocaleString()}</td>
       <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
       <td class="r vm">—</td><td class="r vm">—</td>
+      <td class="r vm">—</td>
       <td style="min-width:80px;padding-right:14px;"><div class="bar-bg"></div></td>
       <td class="r"><span class="badge br">Not sold</span></td>
     </tr>`;
   }
 
   document.getElementById('tbody').innerHTML =
-    rows || `<tr><td colspan="12" class="no-data">No agents found.</td></tr>`;
+    rows || `<tr><td colspan="13" class="no-data">No agents found.</td></tr>`;
+}
+
+// ─── Admin override controls ────────────────────────────────────────────────
+async function setOverride(targetId, state) {
+  // state = 'paused' or 'unpaused' — sets manual override and calls Retreaver immediately
+  manualOverrides[targetId] = state;
+  saveOverrides();
+  await setTargetPaused(targetId, state === 'paused');
+  renderTable();
+}
+
+async function clearOverride(targetId) {
+  // Clear the override; auto-pause loop resumes on the next 30s tick.
+  // Don't touch the paused state immediately — the next loop tick will sync from Dialpad.
+  delete manualOverrides[targetId];
+  saveOverrides();
+  renderTable();
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -716,7 +777,7 @@ async function fetchData() {
     document.getElementById('statusText').textContent = 'Setup required';
     document.getElementById('statusText').className = 'st err';
     document.getElementById('dot').className = 'brand-dot error';
-    document.getElementById('tbody').innerHTML = `<tr><td colspan="12" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
+    document.getElementById('tbody').innerHTML = `<tr><td colspan="13" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
     return;
   }
 
@@ -745,7 +806,7 @@ async function fetchData() {
       Verify <code>worker</code> and <code>token</code> in the URL match your Cloudflare deploy.
       Try <code>${esc(WORKER_URL)}/healthz</code> in a new tab.`;
     document.getElementById('tbody').innerHTML=
-      `<tr><td colspan="12" class="no-data">No data loaded.</td></tr>`;
+      `<tr><td colspan="13" class="no-data">No data loaded.</td></tr>`;
   } finally {
     load.style.display='none';
   }
