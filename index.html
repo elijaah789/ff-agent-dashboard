@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Financially Fluent — Live Agent Report</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:#0d0f12; --surface:#13161b; --surface2:#1a1e25;
+    --border:rgba(255,255,255,0.07); --border2:rgba(255,255,255,0.14);
+    --text:#e8eaf0; --muted:#6b7280;
+    --accent:#00e5a0; --red:#ef4444; --amber:#f59e0b; --blue:#60a5fa; --purple:#a78bfa;
+    --font-head:'Syne',sans-serif; --font-mono:'DM Mono',monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:var(--font-head); min-height:100vh; }
+
+  .topbar { display:flex; align-items:center; justify-content:space-between; padding:16px 28px; border-bottom:1px solid var(--border); background:var(--surface); position:sticky; top:0; z-index:10; gap:12px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; }
+  .brand-dot { width:8px; height:8px; border-radius:50%; background:var(--muted); transition:background 0.4s,box-shadow 0.4s; }
+  .brand-dot.live  { background:var(--accent); box-shadow:0 0 8px var(--accent); animation:breathe 2s ease-in-out infinite; }
+  .brand-dot.error { background:var(--red); box-shadow:0 0 8px var(--red); }
+  @keyframes breathe { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .topbar-right { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .st { font-family:var(--font-mono); font-size:11px; color:var(--muted); }
+  .st.live { color:var(--accent); } .st.err { color:var(--red); }
+  select { background:var(--surface2); border:1px solid var(--border2); color:var(--text); font-family:var(--font-head); font-size:12px; padding:6px 10px; border-radius:6px; cursor:pointer; outline:none; }
+  .btn { background:transparent; border:1px solid var(--border2); color:var(--muted); font-family:var(--font-head); font-size:12px; padding:6px 14px; border-radius:6px; cursor:pointer; transition:all 0.15s; white-space:nowrap; }
+  .btn:hover { border-color:var(--accent); color:var(--accent); }
+  .chip { font-family:var(--font-mono); font-size:11px; color:var(--muted); white-space:nowrap; }
+
+  .main { padding:24px 28px; max-width:1500px; margin:0 auto; }
+  .loader { height:2px; background:linear-gradient(90deg,transparent,var(--accent),transparent); background-size:200%; animation:shimmer 1s infinite; display:none; margin-bottom:16px; border-radius:1px; }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+  .prog { font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-bottom:10px; display:none; }
+
+  .hero { display:grid; grid-template-columns:repeat(auto-fit,minmax(128px,1fr)); gap:12px; margin-bottom:24px; }
+  .mc { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px 18px; }
+  .mc.g { border-color:rgba(0,229,160,0.25); } .mc.r { border-color:rgba(239,68,68,0.25); }
+  .mc.a { border-color:rgba(245,158,11,0.25); } .mc.b { border-color:rgba(96,165,250,0.25); }
+  .ml { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:0.09em; text-transform:uppercase; margin-bottom:8px; }
+  .mv { font-size:26px; font-weight:700; line-height:1; color:var(--text); }
+  .mv.g { color:var(--accent); } .mv.r { color:var(--red); } .mv.a { color:var(--amber); } .mv.b { color:var(--blue); }
+
+  .live-banner { display:none; align-items:center; gap:10px; background:rgba(96,165,250,0.06); border:1px solid rgba(96,165,250,0.2); border-radius:8px; padding:10px 16px; margin-bottom:16px; font-family:var(--font-mono); font-size:12px; color:var(--blue); }
+  .live-banner .pdot { width:7px; height:7px; border-radius:50%; background:var(--blue); animation:breathe 1s ease-in-out infinite; flex-shrink:0; }
+
+  .controls { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; gap:10px; flex-wrap:wrap; }
+  .sw { position:relative; flex:1; max-width:240px; }
+  .sw input { width:100%; background:var(--surface); border:1px solid var(--border); color:var(--text); font-family:var(--font-head); font-size:13px; padding:7px 12px 7px 30px; border-radius:7px; outline:none; }
+  .sw input::placeholder { color:var(--muted); }
+  .si { position:absolute; left:9px; top:50%; transform:translateY(-50%); color:var(--muted); font-size:13px; pointer-events:none; }
+
+  .table-wrap { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  thead th { padding:10px 14px; text-align:left; font-family:var(--font-mono); font-size:10px; letter-spacing:0.07em; text-transform:uppercase; color:var(--muted); background:var(--surface2); border-bottom:1px solid var(--border); font-weight:400; white-space:nowrap; }
+  thead th.r { text-align:right; }
+  tbody tr { border-bottom:1px solid var(--border); transition:background 0.1s; }
+  tbody tr:last-child { border-bottom:none; }
+  tbody tr:hover { background:var(--surface2); }
+  tbody tr.on-call { background:rgba(96,165,250,0.05); }
+  tbody tr.dnd-row  { background:rgba(239,68,68,0.04); }
+  tbody tr.ns-row   { background:rgba(239,68,68,0.03); }
+  tbody td { padding:12px 14px; color:var(--text); vertical-align:middle; }
+  tbody td.r { text-align:right; font-family:var(--font-mono); font-size:12px; }
+  .aname { font-weight:600; font-size:14px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+
+  .dp-pill { display:inline-flex; align-items:center; gap:5px; border-radius:99px; padding:3px 9px; font-family:var(--font-mono); font-size:10px; white-space:nowrap; }
+  .dp-pill .dot { width:5px; height:5px; border-radius:50%; flex-shrink:0; }
+  .dp-available   { background:rgba(0,229,160,0.1);  color:var(--accent); border:1px solid rgba(0,229,160,0.2); }
+  .dp-available .dot { background:var(--accent); animation:breathe 2s ease-in-out infinite; }
+  .dp-unavailable { background:rgba(239,68,68,0.1);  color:var(--red);    border:1px solid rgba(239,68,68,0.2); }
+  .dp-unavailable .dot { background:var(--red); }
+  .dp-unknown     { background:rgba(255,255,255,0.05); color:var(--muted); border:1px solid var(--border); }
+  .dp-unknown .dot { background:var(--muted); }
+
+  .bar-bg { background:rgba(255,255,255,0.06); border-radius:99px; height:4px; min-width:60px; }
+  .bar-fill { background:var(--accent); border-radius:99px; height:4px; opacity:0.75; transition:width 0.5s; }
+  .vg{color:var(--accent);font-weight:500;} .vr{color:var(--red);font-weight:500;}
+  .va{color:var(--amber);font-weight:500;} .vb{color:var(--blue);font-weight:500;} .vm{color:var(--muted);}
+  .badge{display:inline-block;padding:2px 8px;border-radius:99px;font-family:var(--font-mono);font-size:10px;}
+  .bg{background:rgba(0,229,160,0.1);color:var(--accent);border:1px solid rgba(0,229,160,0.2);}
+  .ba{background:rgba(245,158,11,0.1);color:var(--amber);border:1px solid rgba(245,158,11,0.2);}
+  .br{background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.2);}
+  .div-row td{background:rgba(255,255,255,0.02);padding:5px 14px;font-family:var(--font-mono);font-size:9px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
+  .no-data{padding:48px;text-align:center;color:var(--muted);font-size:13px;font-family:var(--font-mono);}
+  .err-box{display:none;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:14px 18px;font-size:13px;color:#fca5a5;margin-bottom:20px;line-height:1.8;}
+  .dialpad-status-bar{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:16px;font-family:var(--font-mono);font-size:11px;color:var(--muted);display:none;}
+  .dialpad-status-bar.active{display:block;}
+  .dsb-title{font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px;color:var(--muted);}
+  .dsb-agents{display:flex;gap:8px;flex-wrap:wrap;}
+  .footer{margin-top:14px;display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:11px;color:var(--muted);flex-wrap:wrap;gap:8px;}
+  .tog{cursor:pointer;text-decoration:underline;text-underline-offset:3px;}
+  .tog:hover{color:var(--text);}
+  pre{margin-top:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;font-family:var(--font-mono);font-size:11px;color:#9ca3af;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;display:none;}
+  #debugBox{border-color:rgba(245,158,11,0.3);color:#f59e0b;}
+  .setup-banner{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:18px 22px;margin-bottom:20px;color:#fbbf24;line-height:1.7;font-size:13px;}
+  .setup-banner code{background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:4px;font-family:var(--font-mono);}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-dot" id="dot"></div>
+    Financially Fluent — Live Agent Report
+  </div>
+  <div class="topbar-right">
+    <span class="st" id="statusText">Connecting...</span>
+    <select id="rangeSelect" onchange="fetchData()">
+      <option value="today">Today</option>
+      <option value="yesterday">Yesterday</option>
+      <option value="7days">Last 7 days</option>
+      <option value="30days">Last 30 days</option>
+    </select>
+    <button class="btn" onclick="fetchData()">Refresh now</button>
+    <button class="btn" id="testBtn" onclick="testRetreaverPause()" style="border-color:var(--amber);color:var(--amber);">Pause unavailable now</button>
+    <button class="btn" id="unpauseBtn" onclick="unpauseAll()" style="border-color:var(--accent);color:var(--accent);">Unpause all</button>
+    <span class="chip" id="countdown"></span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="loader"  id="loader"></div>
+  <div class="prog"    id="prog"></div>
+  <div class="err-box" id="errBox"></div>
+  <div class="setup-banner" id="setupBanner" style="display:none;"></div>
+
+  <div class="live-banner" id="liveBanner">
+    <div class="pdot"></div>
+    <span id="liveBannerText"></span>
+  </div>
+
+  <div class="dialpad-status-bar" id="dialpadBar">
+    <div class="dsb-title">Agent availability (Dialpad)</div>
+    <div class="dsb-agents" id="dialpadAgents"></div>
+  </div>
+
+  <div class="hero">
+    <div class="mc">  <div class="ml">Total calls</div>  <div class="mv"   id="mTotal">—</div></div>
+    <div class="mc g"><div class="ml">Unique calls</div>  <div class="mv g" id="mUnique">—</div></div>
+    <div class="mc g"><div class="ml">Answered</div>      <div class="mv g" id="mAnswered">—</div></div>
+    <div class="mc r"><div class="ml">Not sold</div>      <div class="mv r" id="mNotSold">—</div></div>
+    <div class="mc b"><div class="ml">Live now</div>      <div class="mv b" id="mLive">—</div></div>
+    <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
+    <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
+  </div>
+
+  <div class="controls">
+    <div class="sw">
+      <span class="si">⌕</span>
+      <input type="text" id="searchInput" placeholder="Search agent..." oninput="renderTable()" />
+    </div>
+    <div style="font-family:var(--font-mono);font-size:11px;color:var(--muted);" id="pageInfo"></div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Agent / buyer</th>
+          <th>Available</th>
+          <th class="r">Total calls</th>
+          <th class="r">Unique calls</th>
+          <th class="r">Answered</th>
+          <th class="r">Live now</th>
+          <th class="r">Answer rate</th>
+          <th class="r">Daily cap</th>
+          <th class="r">Total duration</th>
+          <th>Volume</th>
+          <th class="r">Status</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="12" class="no-data">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    <span id="lastUpdated"></span>
+    <div style="display:flex;gap:14px;">
+      <span class="tog" onclick="toggle('debugBox')">Debug info</span>
+      <span class="tog" onclick="toggle('rawBox')">Raw response</span>
+    </div>
+  </div>
+  <pre id="debugBox"></pre>
+  <pre id="rawBox"></pre>
+</div>
+
+<script>
+// ─── Config (read from ?worker=, ?token=, ?campaign= URL params) ─────────────
+//
+// Open the dashboard with:
+//   index.html?worker=https://ff-retreaver-dialpad.<handle>.workers.dev&token=<SHARED_TOKEN>&campaign=<retreaver_campaign_cid>
+//
+// The values are also persisted to localStorage on first load so subsequent
+// reloads work without the query string. To reset: clear browser storage.
+
+const params = new URLSearchParams(location.search);
+const cfg = {
+  worker:   params.get('worker')   || localStorage.getItem('ff_worker')   || '',
+  token:    params.get('token')    || localStorage.getItem('ff_token')    || '',
+  campaign: params.get('campaign') || localStorage.getItem('ff_campaign') || '',
+};
+if (cfg.worker)   localStorage.setItem('ff_worker',   cfg.worker);
+if (cfg.token)    localStorage.setItem('ff_token',    cfg.token);
+if (cfg.campaign) localStorage.setItem('ff_campaign', cfg.campaign);
+
+const WORKER_URL    = cfg.worker.replace(/\/$/, '');
+const SHARED_TOKEN  = cfg.token;
+const CAMPAIGN_KEY  = cfg.campaign; // Retreaver campaign cid hex
+
+const REFRESH       = 30;
+
+// ─── Status sets ─────────────────────────────────────────────────────────────
+const LIVE_S    = new Set(['forwarded','in-progress','in_progress']);
+const NOTSOLD_S = new Set(['no-target','no_target','no-buyer','no_buyer','no-answer','no_answer']);
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let allAgents    = [];
+let notSoldCount = 0;
+let countdown    = REFRESH;
+let timer        = null;
+
+const phoneToTarget = {};
+const targetCaps    = {};
+const dialpadStatus = {};
+
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+function authedFetch(path, init) {
+  const opts = init || {};
+  const headers = Object.assign({}, opts.headers || {}, {
+    'Authorization': 'Bearer ' + SHARED_TOKEN,
+  });
+  return fetch(WORKER_URL + path, Object.assign({}, opts, { headers }));
+}
+
+function showSetupBanner() {
+  const banner = document.getElementById('setupBanner');
+  banner.style.display = 'block';
+  banner.innerHTML =
+    '<strong>Setup needed.</strong> Open this dashboard with your Cloudflare Worker URL, ' +
+    'shared token, and Retreaver campaign cid in the query string:<br><br>' +
+    '<code>index.html?worker=https://YOUR-WORKER.workers.dev&token=YOUR_SHARED_TOKEN&campaign=YOUR_CAMPAIGN_CID</code><br><br>' +
+    'These persist to browser storage after first load. Currently missing: ' +
+    [WORKER_URL ? null : '<code>worker</code>',
+     SHARED_TOKEN ? null : '<code>token</code>',
+     CAMPAIGN_KEY ? null : '<code>campaign</code>'].filter(Boolean).join(', ') + '.';
+}
+
+// ─── Date helpers ─────────────────────────────────────────────────────────────
+function getRange(val) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  if (val === 'today')     return { start:fmt(now), end:fmt(now) };
+  if (val === 'yesterday') { const y=new Date(now); y.setDate(y.getDate()-1); return {start:fmt(y),end:fmt(y)}; }
+  if (val === '7days')     { const s=new Date(now); s.setDate(s.getDate()-6); return {start:fmt(s),end:fmt(now)}; }
+  if (val === '30days')    { const s=new Date(now); s.setDate(s.getDate()-29); return {start:fmt(s),end:fmt(now)}; }
+  return { start:fmt(now), end:fmt(now) };
+}
+
+// ─── Retreaver: fetch all pages ───────────────────────────────────────────────
+async function fetchAllPages() {
+  const { start, end } = getRange(document.getElementById('rangeSelect').value);
+  const prog = document.getElementById('prog');
+  prog.style.display = 'block';
+
+  let all = [], page = 1;
+  const startMs = new Date(start + 'T00:00:00').getTime();
+  const endMs   = new Date(end   + 'T23:59:59').getTime();
+
+  while (page <= 200) {
+    prog.textContent = `Loading page ${page}... (${all.length.toLocaleString()} calls so far)`;
+    const res = await authedFetch(`/retreaver/calls?start=${start}&end=${end}&page=${page}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status} on page ${page}`);
+
+    const text = await res.text();
+    if (page === 1) document.getElementById('rawBox').textContent = text.slice(0, 6000);
+
+    const json  = JSON.parse(text);
+    const raw   = Array.isArray(json) ? json : (json.calls || json.data || []);
+    const calls = raw.map(r => r.call ? r.call : r);
+
+    if (calls.length === 0) break;
+
+    const filtered = calls.filter(c => {
+      if (!c.start_time) return true;
+      const t = new Date(c.start_time).getTime();
+      return t >= startMs && t <= endMs;
+    });
+    all = all.concat(filtered);
+
+    const oldest = calls[calls.length - 1];
+    if (oldest && oldest.start_time) {
+      const oldestMs = new Date(oldest.start_time).getTime();
+      if (oldestMs < startMs) break;
+    }
+    page++;
+  }
+
+  prog.style.display = 'none';
+  document.getElementById('pageInfo').textContent =
+    `${all.length.toLocaleString()} calls · ${page} pages fetched`;
+
+  return { calls: all, start, end };
+}
+
+// ─── Retreaver: pause / unpause one target ───────────────────────────────────
+async function setTargetPaused(targetId, paused) {
+  try {
+    await authedFetch(`/retreaver/targets/${targetId}/pause`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paused }),
+    });
+    console.log(`Target ${targetId} ${paused ? 'paused' : 'unpaused'}`);
+  } catch (e) {
+    console.warn(`Could not update target ${targetId}:`, e.message);
+  }
+}
+
+// ─── Dialpad: pull presence and reconcile to Retreaver ──────────────────────
+async function fetchDialpadStatuses() {
+  const debugEl = document.getElementById('debugBox');
+  let dpDebug = '\n\nDIALPAD STATUS:\n';
+
+  try {
+    let users = [], cursor = null;
+    while (true) {
+      const cursorParam = cursor ? `?cursor=${cursor}` : '';
+      const res = await authedFetch(`/dialpad/users${cursorParam}`);
+      if (!res.ok) { dpDebug += `  HTTP ${res.status}\n`; break; }
+      const json = await res.json();
+      const page = json.items || json.users || (Array.isArray(json) ? json : []);
+      users = users.concat(page);
+      cursor = json.cursor || json.next_cursor || null;
+      if (!cursor || page.length === 0) break;
+    }
+
+    dpDebug += `  Users fetched: ${users.length}\n`;
+    Object.keys(dialpadStatus).forEach(k => delete dialpadStatus[k]);
+    const retreaverPauses = [];
+
+    users.forEach(user => {
+      const phones = (user.phone_numbers || []).map(p =>
+        normalizePhone(typeof p === 'object' ? (p.number || p.value || '') : p)
+      ).filter(Boolean);
+
+      const isAvailable = user.is_available === true;
+      const dpStatusVal = isAvailable ? 'available' : 'unavailable';
+      const name = user.display_name || `${user.first_name||''} ${user.last_name||''}`.trim();
+      const nameKey = name.toLowerCase().replace(/[^a-z]/g,'');
+
+      dialpadStatus[nameKey] = { name, status: dpStatusVal, userId: user.id, phone: phones[0]||'' };
+      phones.forEach(phone => {
+        dialpadStatus[phone] = { name, status: dpStatusVal, userId: user.id, phone };
+        dpDebug += `    ${phone} -> ${name} (${dpStatusVal})\n`;
+        const target = phoneToTarget[phone];
+        if (target) {
+          retreaverPauses.push({ targetId: target.targetId, name: target.name, shouldPause: !isAvailable, phone });
+        }
+      });
+    });
+
+    await Promise.all(retreaverPauses.map(async ({ targetId, name, shouldPause, phone }) => {
+      await setTargetPaused(targetId, shouldPause);
+      dpDebug += `  ${shouldPause ? '⏸ Paused' : '▶ Unpaused'} Retreaver target: ${name} (${phone})\n`;
+    }));
+
+    const summary = Object.values(dialpadStatus).reduce((acc,a) => {
+      acc[a.status] = (acc[a.status]||0)+1; return acc;
+    }, {});
+    dpDebug += `  Status summary: ${JSON.stringify(summary)}\n`;
+    dpDebug += `  Mapped to Retreaver: ${retreaverPauses.length} agents\n`;
+
+    updateDialpadBar();
+    renderTable();
+
+  } catch(e) {
+    dpDebug += `  FATAL: ${e.message}\n`;
+  }
+
+  if (debugEl && debugEl.style.display === 'block') {
+    debugEl.textContent = debugEl.textContent.split('\n\nDIALPAD STATUS:')[0] + dpDebug;
+  }
+}
+
+function normalizePhone(p) {
+  const digits = (p || '').replace(/\D/g,'');
+  return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+}
+
+function updateDialpadBar() {
+  const bar    = document.getElementById('dialpadBar');
+  const agents = document.getElementById('dialpadAgents');
+  const entries = Object.values(dialpadStatus);
+  if (entries.length === 0) { bar.classList.remove('active'); return; }
+  bar.classList.add('active');
+  agents.innerHTML = entries.map(a => {
+    const cls   = a.status === 'available' ? 'dp-pill dp-available' : 'dp-pill dp-unavailable';
+    const label = a.status === 'available' ? 'Available' : 'Unavailable';
+    return `<span class="${cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${label}</span>`;
+  }).join('');
+}
+
+// ─── Process Retreaver calls ──────────────────────────────────────────────────
+function processCalls(calls, start, end) {
+  const agents     = {};
+  const statusCount= {};
+  let totTotal=0, totUnique=0, totAnswered=0, totNotSold=0, totLive=0;
+
+  const callerCount = {};
+  calls.forEach(call => {
+    if (call.caller) callerCount[call.caller] = (callerCount[call.caller] || 0) + 1;
+  });
+
+  calls.forEach(call => {
+    const s     = (call.status || '').toLowerCase().trim();
+    const agent = call.tid || null;
+    statusCount[s] = (statusCount[s]||0) + 1;
+
+    if (call.dialed_number && call.system_target_id && agent) {
+      const phone = normalizePhone(call.dialed_number);
+      phoneToTarget[phone] = { targetId: call.system_target_id, name: agent };
+    }
+
+    if (CAMPAIGN_KEY && call.system_campaign_id && call.campaign_key && call.campaign_key !== CAMPAIGN_KEY) return;
+
+    if (NOTSOLD_S.has(s)) {
+      const callerTotal = callerCount[call.caller] || 1;
+      const callerReachedAgent = calls.some(c =>
+        c.caller === call.caller && !NOTSOLD_S.has((c.status||'').toLowerCase()) && c.tid
+      );
+      if (callerTotal === 1 && !callerReachedAgent) totNotSold++;
+      return;
+    }
+
+    if (!agent) return;
+
+    if (!agents[agent]) agents[agent] = {
+      name: agent, total:0, unique:0, callers:new Set(),
+      answered:0, live:0, dur:0,
+      dialedNumber: normalizePhone(call.dialed_number || '')
+    };
+
+    const a   = agents[agent];
+    const dur = parseInt(call.total_duration || 0, 10);
+    a.total++; totTotal++;
+
+    if (call.caller && !a.callers.has(call.caller)) {
+      a.callers.add(call.caller);
+      a.unique++; totUnique++;
+    }
+
+    if (LIVE_S.has(s))               { a.live++; totLive++; a.dur += dur; return; }
+    const isReceivable = call.receivable === true || call.receivable === 'true';
+    if (dur > 0) a.dur += dur;
+    if (isReceivable && dur >= 90) { a.answered++; totAnswered++; }
+  });
+
+  allAgents    = Object.values(agents).sort((a,b) => b.total - a.total);
+  notSoldCount = totNotSold;
+
+  const rate = totUnique ? Math.round((totAnswered/totUnique)*100) : 0;
+
+  document.getElementById('mTotal').textContent    = totTotal.toLocaleString();
+  document.getElementById('mUnique').textContent   = totUnique.toLocaleString();
+  document.getElementById('mAnswered').textContent = totAnswered.toLocaleString();
+  document.getElementById('mNotSold').textContent  = totNotSold.toLocaleString();
+  document.getElementById('mLive').textContent     = totLive.toLocaleString();
+  document.getElementById('mRate').textContent     = rate + '%';
+  document.getElementById('mAgents').textContent   = allAgents.length;
+  document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+
+  const liveAgents = allAgents.filter(a => a.live > 0);
+  const banner = document.getElementById('liveBanner');
+  if (liveAgents.length > 0) {
+    banner.style.display = 'flex';
+    document.getElementById('liveBannerText').textContent =
+      `${totLive} live call${totLive!==1?'s':''} in progress — ${liveAgents.map(a=>a.name).join(', ')}`;
+  } else {
+    banner.style.display = 'none';
+  }
+
+  const top5 = allAgents.slice(0,5).map(a =>
+    `  ${a.name}: total=${a.total} unique=${a.unique} answered=${a.answered} live=${a.live}`
+  ).join('\n');
+  const sample = calls.find(c=>c.tid) || calls[0] || {};
+  document.getElementById('debugBox').textContent =
+`DATE RANGE: ${start} → ${end}
+TOTAL CALLS (after date filter): ${calls.length}
+STATUS BREAKDOWN: ${JSON.stringify(statusCount,null,2)}
+CAMPAIGN FILTER: ${CAMPAIGN_KEY || '(all campaigns)'}
+COMPUTED: total=${totTotal} unique=${totUnique} answered=${totAnswered} notSold=${totNotSold} live=${totLive}
+PHONE->TARGET MAP (${Object.keys(phoneToTarget).length} entries):
+${Object.entries(phoneToTarget).map(([k,v]) => '  ' + k + ' -> ' + v.name + ' (ID:' + v.targetId + ')').join('\n')}
+TOP 5 AGENTS:
+${top5}
+SAMPLE: status=${sample.status} tid=${sample.tid} receivable=${sample.receivable} (type=${typeof sample.receivable}) dur=${sample.total_duration}`;
+
+  renderTable();
+  fetchDialpadStatuses();
+}
+
+// ─── Render table ─────────────────────────────────────────────────────────────
+function renderTable() {
+  const search   = document.getElementById('searchInput').value.toLowerCase();
+  const filtered = allAgents.filter(a => a.name.toLowerCase().includes(search));
+  const maxTotal = Math.max(...allAgents.map(a=>a.total), 1);
+
+  let rows='', rank=0;
+  filtered.forEach(a => {
+    rank++;
+    const rate   = a.unique ? Math.round((a.answered/a.unique)*100) : 0;
+    const barW   = Math.round((a.total/maxTotal)*100);
+    const isLive = a.live > 0;
+    const rClass = rate>=80?'vg':rate>=50?'va':'vr';
+    const badge  = rate>=80?`<span class="badge bg">Strong</span>`
+                 : rate>=50?`<span class="badge ba">Moderate</span>`
+                 :           `<span class="badge br">Low</span>`;
+
+    let dp = dialpadStatus[a.dialedNumber];
+    if (!dp) {
+      const nameKey = a.name.toLowerCase().replace(/[^a-z]/g,'');
+      dp = dialpadStatus[nameKey] || null;
+    }
+    if (!dp) {
+      const agentNameLower = a.name.toLowerCase();
+      dp = Object.values(dialpadStatus).find(d => {
+        if (!d.name) return false;
+        const dpNameLower = d.name.toLowerCase();
+        const parts = dpNameLower.split(' ').filter(p => p.length > 3 && !['dialpad','from'].includes(p));
+        return parts.some(part => agentNameLower.includes(part));
+      }) || null;
+    }
+    let dpPill, rowClass='';
+    if (!dp) {
+      dpPill = `<span class="dp-pill dp-unknown"><span class="dot"></span>—</span>`;
+    } else if (dp.status === 'available') {
+      dpPill = `<span class="dp-pill dp-available"><span class="dot"></span>Yes</span>`;
+    } else {
+      dpPill = `<span class="dp-pill dp-unavailable"><span class="dot"></span>No</span>`;
+      rowClass = ' class="dnd-row"';
+    }
+    if (isLive) rowClass = ' class="on-call"';
+
+    rows += `<tr${rowClass}>
+      <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${rank}</td>
+      <td><div class="aname">${esc(a.name)}</div></td>
+      <td>${dpPill}</td>
+      <td class="r vm">${a.total.toLocaleString()}</td>
+      <td class="r vg">${a.unique.toLocaleString()}</td>
+      <td class="r vg">${a.answered.toLocaleString()}</td>
+      <td class="r vb">${a.live>0?a.live:'<span class="vm">—</span>'}</td>
+      <td class="r ${rClass}">${rate}%</td>
+      <td class="r vm">${capCell(a)}</td>
+      <td class="r vm">${fmtDur(a.dur)}</td>
+      <td style="min-width:80px;padding-right:14px;"><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
+      <td class="r">${badge}</td>
+    </tr>`;
+  });
+
+  if (!search) {
+    rows += `<tr class="div-row"><td colspan="12">Not sold — no agent reached</td></tr>`;
+    rows += `<tr class="ns-row">
+      <td class="vm" style="font-size:11px;font-family:var(--font-mono);">—</td>
+      <td><div class="aname" style="color:var(--red);font-size:13px;">No answer / No buyer / No target</div></td>
+      <td class="vm">—</td>
+      <td class="r vr">${notSoldCount.toLocaleString()}</td>
+      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
+      <td class="r vm">—</td><td class="r vm">—</td>
+      <td style="min-width:80px;padding-right:14px;"><div class="bar-bg"></div></td>
+      <td class="r"><span class="badge br">Not sold</span></td>
+    </tr>`;
+  }
+
+  document.getElementById('tbody').innerHTML =
+    rows || `<tr><td colspan="12" class="no-data">No agents found.</td></tr>`;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function capCell(a) {
+  const target = phoneToTarget[a.dialedNumber];
+  if (!target) return '<span class="vm">—</span>';
+  const cap = targetCaps[target.targetId];
+  if (!cap) return '<span class="vm">—</span>';
+  if (cap.daily === null) return '<span class="vm">No cap</span>';
+  const used = a.unique;
+  const limit = cap.daily;
+  const pct = Math.round((used / limit) * 100);
+  const cls = pct >= 90 ? 'vr' : pct >= 70 ? 'va' : 'vg';
+  return '<span class="' + cls + '">' + used + '/' + limit + '</span>';
+}
+
+function fmtDur(s) {
+  if (!s||s<=0) return '—';
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
+  if(h>0) return `${h}h ${m}m`;
+  if(m>0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function toggle(id) { const e=document.getElementById(id); e.style.display=e.style.display==='block'?'none':'block'; }
+
+// ─── Manual: pause every unavailable agent in Retreaver right now ────────────
+async function testRetreaverPause() {
+  const btn = document.getElementById('testBtn');
+  btn.textContent = 'Working...'; btn.disabled = true;
+
+  const entries = Object.values(dialpadStatus);
+  if (entries.length === 0) {
+    alert('No Dialpad status data yet — wait for the dashboard to load.');
+    btn.textContent = 'Pause unavailable now'; btn.disabled = false; return;
+  }
+
+  const results = [];
+  for (const agent of entries) {
+    const target = phoneToTarget[agent.phone];
+    if (!target) continue;
+    const shouldPause = agent.status !== 'available';
+    try {
+      const res = await authedFetch(`/retreaver/targets/${target.targetId}/pause`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: shouldPause }),
+      });
+      results.push({ name: target.name, targetId: target.targetId,
+        action: shouldPause ? 'PAUSED' : 'UNPAUSED', http: res.status, ok: res.ok });
+    } catch(e) {
+      results.push({ name: target.name, targetId: target.targetId,
+        action: shouldPause ? 'PAUSED' : 'UNPAUSED', http: 'ERROR', ok: false, error: e.message });
+    }
+  }
+
+  const debugEl = document.getElementById('debugBox');
+  debugEl.style.display = 'block';
+  const resultText = results.map(r => `  ${r.ok ? 'OK' : 'FAIL'} ${r.name} (ID:${r.targetId}) -> ${r.action} [HTTP ${r.http}]`).join('\n');
+  debugEl.textContent = debugEl.textContent.split('\n\nMANUAL PAUSE')[0] + '\n\nMANUAL PAUSE (' + new Date().toLocaleTimeString() + '):\n' + resultText;
+
+  const passed = results.filter(r => r.ok).length;
+  const failed = results.filter(r => !r.ok).length;
+  btn.textContent = `✓ Done — ${passed} updated, ${failed} failed`;
+  setTimeout(() => { btn.textContent = 'Pause unavailable now'; btn.disabled = false; }, 5000);
+}
+
+async function fetchTargetCaps() {
+  try {
+    let page = 1;
+    while (page <= 10) {
+      const res = await authedFetch(`/retreaver/targets?page=${page}`);
+      if (!res.ok) break;
+      const json = await res.json();
+      const raw = Array.isArray(json) ? json : (json.targets || json.data || []);
+      const targets = raw.map(t => t.target ? t.target : t);
+      if (targets.length === 0) break;
+
+      targets.forEach(t => {
+        const daily = (t.caps || []).find(c => c.type === 'Daily');
+        const hard  = (t.caps || []).find(c => c.type === 'Hard');
+        targetCaps[t.id] = {
+          daily:        daily ? daily.cap   : null,
+          dailyFilled:  daily ? daily.filled : 0,
+          hard:         hard  ? hard.cap    : null,
+          hardFilled:   hard  ? hard.filled  : 0,
+          concurrency:  t.concurrency_cap || null,
+          inProgress:   t.calls_in_progress || 0,
+        };
+      });
+
+      if (targets.length < 25) break;
+      page++;
+    }
+    console.log('Target caps loaded:', Object.keys(targetCaps).length);
+  } catch(e) {
+    console.warn('Could not fetch target caps:', e.message);
+  }
+}
+
+async function unpauseAll() {
+  const btn = document.getElementById('unpauseBtn');
+  btn.textContent = 'Working...'; btn.disabled = true;
+  const targets = Object.values(phoneToTarget);
+  if (targets.length === 0) {
+    alert('No agent data yet — wait for the dashboard to load.');
+    btn.textContent = 'Unpause all'; btn.disabled = false; return;
+  }
+  const results = [];
+  for (const target of targets) {
+    try {
+      const res = await authedFetch(`/retreaver/targets/${target.targetId}/pause`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: false }),
+      });
+      results.push({ name: target.name, targetId: target.targetId, http: res.status, ok: res.ok });
+    } catch(e) {
+      results.push({ name: target.name, targetId: target.targetId, http: 'ERROR', ok: false });
+    }
+  }
+  const debugEl = document.getElementById('debugBox');
+  debugEl.style.display = 'block';
+  const lines = results.map(r => '  ' + (r.ok ? 'OK' : 'FAIL') + ' ' + r.name + ' (ID:' + r.targetId + ') -> UNPAUSED [HTTP ' + r.http + ']').join('\n');
+  debugEl.textContent = debugEl.textContent.split('\n\nUNPAUSE ALL')[0] + '\n\nUNPAUSE ALL (' + new Date().toLocaleTimeString() + '):\n' + lines;
+  const ok = results.filter(r => r.ok).length;
+  btn.textContent = `✓ ${ok}/${results.length} unpaused`;
+  setTimeout(() => { btn.textContent = 'Unpause all'; btn.disabled = false; }, 5000);
+}
+
+async function fetchData() {
+  if (!WORKER_URL || !SHARED_TOKEN) {
+    showSetupBanner();
+    document.getElementById('statusText').textContent = 'Setup required';
+    document.getElementById('statusText').className = 'st err';
+    document.getElementById('dot').className = 'brand-dot error';
+    document.getElementById('tbody').innerHTML = `<tr><td colspan="12" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
+    return;
+  }
+
+  clearInterval(timer);
+  countdown = REFRESH; updateCountdown();
+
+  const dot  = document.getElementById('dot');
+  const st   = document.getElementById('statusText');
+  const err  = document.getElementById('errBox');
+  const load = document.getElementById('loader');
+
+  dot.className='brand-dot'; st.className='st'; st.textContent='Fetching...';
+  err.style.display='none'; load.style.display='block';
+
+  try {
+    const { calls, start, end } = await fetchAllPages();
+    await fetchTargetCaps();
+    processCalls(calls, start, end);
+    dot.className='brand-dot live'; st.className='st live';
+    st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
+  } catch(e) {
+    dot.className='brand-dot error'; st.className='st err';
+    st.textContent='Connection error';
+    err.style.display='block';
+    err.innerHTML=`<strong>Could not connect to worker</strong><br><br>${esc(e.message)}<br><br>
+      Verify <code>worker</code> and <code>token</code> in the URL match your Cloudflare deploy.
+      Try <code>${esc(WORKER_URL)}/healthz</code> in a new tab.`;
+    document.getElementById('tbody').innerHTML=
+      `<tr><td colspan="12" class="no-data">No data loaded.</td></tr>`;
+  } finally {
+    load.style.display='none';
+  }
+
+  startCountdown();
+}
+
+function startCountdown() {
+  timer = setInterval(() => { countdown--; updateCountdown(); if(countdown<=0) fetchData(); }, 1000);
+}
+function updateCountdown() {
+  document.getElementById('countdown').textContent = `Refresh in ${countdown}s`;
+}
+
+fetchData();
+</script>
+</body>
+</html>
