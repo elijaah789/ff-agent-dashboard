@@ -39,9 +39,10 @@
   .mc { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px 18px; }
   .mc.g { border-color:rgba(0,229,160,0.25); } .mc.r { border-color:rgba(239,68,68,0.25); }
   .mc.a { border-color:rgba(245,158,11,0.25); } .mc.b { border-color:rgba(96,165,250,0.25); }
+  .mc.p { border-color:rgba(167,139,250,0.25); }
   .ml { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:0.09em; text-transform:uppercase; margin-bottom:8px; }
   .mv { font-size:26px; font-weight:700; line-height:1; color:var(--text); }
-  .mv.g { color:var(--accent); } .mv.r { color:var(--red); } .mv.a { color:var(--amber); } .mv.b { color:var(--blue); }
+  .mv.g { color:var(--accent); } .mv.r { color:var(--red); } .mv.a { color:var(--amber); } .mv.b { color:var(--blue); } .mv.p { color:var(--purple); }
 
   .live-banner { display:none; align-items:center; gap:10px; background:rgba(96,165,250,0.06); border:1px solid rgba(96,165,250,0.2); border-radius:8px; padding:10px 16px; margin-bottom:16px; font-family:var(--font-mono); font-size:12px; color:var(--blue); }
   .live-banner .pdot { width:7px; height:7px; border-radius:50%; background:var(--blue); animation:breathe 1s ease-in-out infinite; flex-shrink:0; }
@@ -88,10 +89,32 @@
   .bar-fill { background:var(--accent); border-radius:99px; height:4px; opacity:0.75; transition:width 0.5s; }
   .vg{color:var(--accent);font-weight:500;} .vr{color:var(--red);font-weight:500;}
   .va{color:var(--amber);font-weight:500;} .vb{color:var(--blue);font-weight:500;} .vm{color:var(--muted);}
+  .vp{color:var(--purple);font-weight:500;}
   .badge{display:inline-block;padding:2px 8px;border-radius:99px;font-family:var(--font-mono);font-size:10px;}
   .bg{background:rgba(0,229,160,0.1);color:var(--accent);border:1px solid rgba(0,229,160,0.2);}
   .ba{background:rgba(245,158,11,0.1);color:var(--amber);border:1px solid rgba(245,158,11,0.2);}
   .br{background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.2);}
+
+  /* Click-to-expand agent rows */
+  tbody tr.agent-row { cursor:pointer; }
+  tbody tr.detail-row { display:none; background:var(--surface2); }
+  tbody tr.detail-row.open { display:table-row; }
+  tbody tr.detail-row td { padding:0; }
+  .expand-icon { font-size:10px; color:var(--muted); transition:transform 0.2s; display:inline-block; }
+  .expand-icon.open { transform:rotate(90deg); color:var(--accent); }
+
+  /* Per-call detail dropdown */
+  .detail-inner { padding:12px 16px 16px 40px; }
+  .detail-title { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:10px; }
+  .detail-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .detail-table th { padding:6px 10px; text-align:left; font-family:var(--font-mono); font-size:9px; letter-spacing:0.07em; text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--border); font-weight:400; white-space:nowrap; background:transparent; }
+  .detail-table th.r { text-align:right; }
+  .detail-table td { padding:7px 10px; border-bottom:1px solid rgba(255,255,255,0.04); color:var(--text); vertical-align:middle; }
+  .detail-table td.r { text-align:right; font-family:var(--font-mono); font-size:11px; }
+  .detail-table tr:last-child td { border-bottom:none; }
+  .rec-btn { display:inline-flex; align-items:center; gap:4px; background:rgba(96,165,250,0.1); border:1px solid rgba(96,165,250,0.2); color:var(--blue); border-radius:99px; padding:2px 8px; font-family:var(--font-mono); font-size:10px; text-decoration:none; white-space:nowrap; }
+  .rec-btn:hover { background:rgba(96,165,250,0.2); }
+
   .div-row td{background:rgba(255,255,255,0.02);padding:5px 14px;font-family:var(--font-mono);font-size:9px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
   .no-data{padding:48px;text-align:center;color:var(--muted);font-size:13px;font-family:var(--font-mono);}
   .err-box{display:none;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:14px 18px;font-size:13px;color:#fca5a5;margin-bottom:20px;line-height:1.8;}
@@ -150,7 +173,9 @@
     <div class="mc">  <div class="ml">Total calls</div>  <div class="mv"   id="mTotal">—</div></div>
     <div class="mc g"><div class="ml">Unique calls</div>  <div class="mv g" id="mUnique">—</div></div>
     <div class="mc g"><div class="ml">Answered</div>      <div class="mv g" id="mAnswered">—</div></div>
+    <div class="mc p"><div class="ml">Receivable</div>    <div class="mv p" id="mReceivable">—</div></div>
     <div class="mc r"><div class="ml">Not sold</div>      <div class="mv r" id="mNotSold">—</div></div>
+    <div class="mc p"><div class="ml">10min+ calls</div>  <div class="mv p" id="mLongCalls">—</div></div>
     <div class="mc b"><div class="ml">Live now</div>      <div class="mv b" id="mLive">—</div></div>
     <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
@@ -168,12 +193,13 @@
     <table>
       <thead>
         <tr>
-          <th colspan="4" style="background:var(--surface2);font-style:italic;">Agent</th>
-          <th colspan="6" class="r" style="background:rgba(0,229,160,0.04);font-style:italic;">Retreaver (paid 866 only)</th>
+          <th colspan="5" style="background:var(--surface2);font-style:italic;">Agent</th>
+          <th colspan="10" class="r" style="background:rgba(0,229,160,0.04);font-style:italic;">Retreaver (paid 866 only)</th>
           <th colspan="3" class="r" style="background:rgba(96,165,250,0.04);font-style:italic;">Dialpad (all inbound)</th>
           <th>&nbsp;</th>
         </tr>
         <tr>
+          <th></th>
           <th>#</th>
           <th>Agent / buyer</th>
           <th>Available</th>
@@ -181,9 +207,13 @@
           <th class="r">Total calls</th>
           <th class="r">Unique callers</th>
           <th class="r">Answered</th>
+          <th class="r">Receivable (60s+)</th>
+          <th class="r">10min+ calls</th>
           <th class="r">Live now</th>
           <th class="r">Answer rate</th>
           <th class="r">Daily cap</th>
+          <th class="r">Duration</th>
+          <th>Volume</th>
           <th class="r">Rings</th>
           <th class="r">Answered</th>
           <th class="r">Missed</th>
@@ -191,7 +221,7 @@
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="14" class="no-data">Loading...</td></tr>
+        <tr><td colspan="19" class="no-data">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -235,10 +265,14 @@ const REFRESH       = 30;
 // ─── Status sets ─────────────────────────────────────────────────────────────
 const LIVE_S    = new Set(['forwarded','in-progress','in_progress']);
 const NOTSOLD_S = new Set(['no-target','no_target','no-buyer','no_buyer','no-answer','no_answer']);
+// Used only by per-call detail dropdowns to label individual call status.
+// Aggregate "Answered" metric still uses the existing 90s+receivable rule.
+const ANSWERED_S = new Set(['finished','completed']);
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let allAgents    = [];
 let notSoldCount = 0;
+let notSoldCalls = []; // per-call details for the Not-sold expandable row
 let countdown    = REFRESH;
 let timer        = null;
 
@@ -468,7 +502,9 @@ function updateDialpadBar() {
 function processCalls(calls, start, end) {
   const agents     = {};
   const statusCount= {};
-  let totTotal=0, totUnique=0, totAnswered=0, totNotSold=0, totLive=0;
+  let totTotal=0, totUnique=0, totAnswered=0, totReceivable=0, totLongCalls=0, totNotSold=0, totLive=0;
+  notSoldCalls = []; // reset details for the not-sold dropdown
+  const notSoldSeen = new Set(); // dedupe by caller number
 
   const callerCount = {};
   calls.forEach(call => {
@@ -494,7 +530,22 @@ function processCalls(calls, start, end) {
       const callerReachedAgent = calls.some(c =>
         c.caller === call.caller && !NOTSOLD_S.has((c.status||'').toLowerCase()) && c.tid
       );
-      if (callerTotal === 1 && !callerReachedAgent) totNotSold++;
+      if (callerTotal === 1 && !callerReachedAgent) {
+        totNotSold++;
+        if (call.caller && !notSoldSeen.has(call.caller)) {
+          notSoldSeen.add(call.caller);
+          notSoldCalls.push({
+            caller: call.caller || '—',
+            start_time: call.start_time,
+            status: call.status,
+            duration: parseInt(call.total_duration || 0, 10),
+            caller_state: call.caller_state || '—',
+            caller_city:  call.caller_city  || '—',
+            recording_url: call.recording_url || null,
+            attempts: callerCount[call.caller] || 1,
+          });
+        }
+      }
       return;
     }
 
@@ -503,6 +554,7 @@ function processCalls(calls, start, end) {
     if (!agents[agent]) agents[agent] = {
       name: agent, total:0, unique:0, callers:new Set(),
       answered:0, live:0, dur:0,
+      receivable:0, longCalls:0, calls:[],
       dialedNumber: normalizePhone(call.dialed_number || '')
     };
 
@@ -515,10 +567,24 @@ function processCalls(calls, start, end) {
       a.unique++; totUnique++;
     }
 
+    a.calls.push({
+      uuid: call.uuid,
+      caller: call.caller || '—',
+      start_time: call.start_time,
+      duration: dur,
+      status: call.status,
+      receivable: call.receivable,
+      recording_url: call.recording_url || null,
+      caller_state: call.caller_state || '—',
+      caller_city:  call.caller_city  || '—',
+    });
+
     if (LIVE_S.has(s))               { a.live++; totLive++; a.dur += dur; return; }
     const isReceivable = call.receivable === true || call.receivable === 'true';
     if (dur > 0) a.dur += dur;
     if (isReceivable && dur >= 90) { a.answered++; totAnswered++; }
+    if (isReceivable && dur >= 60) { a.receivable++; totReceivable++; }
+    if (ANSWERED_S.has(s) && dur >= 600) { a.longCalls++; totLongCalls++; }
   });
 
   // Ensure every known Retreaver target has a row, even if it had 0 calls in this period.
@@ -528,6 +594,7 @@ function processCalls(calls, start, end) {
       agents[name] = {
         name, total:0, unique:0, callers:new Set(),
         answered:0, live:0, dur:0,
+        receivable:0, longCalls:0, calls:[],
         dialedNumber: targetIdToPhone[targetId] || ''
       };
     }
@@ -538,13 +605,15 @@ function processCalls(calls, start, end) {
 
   const rate = totUnique ? Math.round((totAnswered/totUnique)*100) : 0;
 
-  document.getElementById('mTotal').textContent    = totTotal.toLocaleString();
-  document.getElementById('mUnique').textContent   = totUnique.toLocaleString();
-  document.getElementById('mAnswered').textContent = totAnswered.toLocaleString();
-  document.getElementById('mNotSold').textContent  = totNotSold.toLocaleString();
-  document.getElementById('mLive').textContent     = totLive.toLocaleString();
-  document.getElementById('mRate').textContent     = rate + '%';
-  document.getElementById('mAgents').textContent   = allAgents.length;
+  document.getElementById('mTotal').textContent      = totTotal.toLocaleString();
+  document.getElementById('mUnique').textContent     = totUnique.toLocaleString();
+  document.getElementById('mAnswered').textContent   = totAnswered.toLocaleString();
+  document.getElementById('mReceivable').textContent = totReceivable.toLocaleString();
+  document.getElementById('mNotSold').textContent    = totNotSold.toLocaleString();
+  document.getElementById('mLongCalls').textContent  = totLongCalls.toLocaleString();
+  document.getElementById('mLive').textContent       = totLive.toLocaleString();
+  document.getElementById('mRate').textContent       = rate + '%';
+  document.getElementById('mAgents').textContent     = allAgents.length;
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
 
   const liveAgents = allAgents.filter(a => a.live > 0);
@@ -608,16 +677,16 @@ function renderTable() {
         return parts.some(part => agentNameLower.includes(part));
       }) || null;
     }
-    let dpPill, rowClass='';
+    let dpPill, rowVariant='';
     if (!dp) {
       dpPill = `<span class="dp-pill dp-unknown"><span class="dot"></span>—</span>`;
     } else if (dp.status === 'available') {
       dpPill = `<span class="dp-pill dp-available"><span class="dot"></span>Yes</span>`;
     } else {
       dpPill = `<span class="dp-pill dp-unavailable"><span class="dot"></span>No</span>`;
-      rowClass = ' class="dnd-row"';
+      rowVariant = ' dnd-row';
     }
-    if (isLive) rowClass = ' class="on-call"';
+    if (isLive) rowVariant = ' on-call';
 
     // Admin override button — pulls targetId from phoneToTarget map
     const targetEntry = phoneToTarget[a.dialedNumber];
@@ -644,41 +713,170 @@ function renderTable() {
     const dpAnsCell    = dpAnswered === null ? '<span class="vm">—</span>' : (dpAnswered > 0 ? `<span class="vg">${dpAnswered}</span>` : '<span class="vm">0</span>');
     const dpMissedCell = dpMissed   === null ? '<span class="vm">—</span>' : (dpMissed   > 0 ? `<span class="vr">${dpMissed}</span>`   : '<span class="vm">0</span>');
 
-    rows += `<tr${rowClass}>
+    const detailId = `detail-${rank}`;
+    const iconId   = `icon-${rank}`;
+    rows += `<tr class="agent-row${rowVariant}" onclick="toggleDetail('${detailId}','${iconId}')">
+      <td style="width:20px;"><span class="expand-icon" id="${iconId}">▶</span></td>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${rank}</td>
       <td><div class="aname">${esc(a.name)}</div></td>
       <td>${dpPill}</td>
-      <td>${overrideCell}</td>
+      <td onclick="event.stopPropagation();">${overrideCell}</td>
       <td class="r vm">${a.total.toLocaleString()}</td>
       <td class="r vg">${a.unique.toLocaleString()}</td>
       <td class="r vg">${a.answered.toLocaleString()}</td>
+      <td class="r vp">${a.receivable>0?a.receivable.toLocaleString():'<span class="vm">—</span>'}</td>
+      <td class="r vp">${a.longCalls>0?a.longCalls:'<span class="vm">—</span>'}</td>
       <td class="r vb">${a.live>0?a.live:'<span class="vm">—</span>'}</td>
       <td class="r ${rClass}">${rate}%</td>
       <td class="r vm">${capCell(a)}</td>
+      <td class="r vm">${fmtDur(a.dur)}</td>
+      <td style="min-width:70px;"><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
       <td class="r">${ringsCell}</td>
       <td class="r">${dpAnsCell}</td>
       <td class="r">${dpMissedCell}</td>
       <td class="r">${badge}</td>
+    </tr>
+    <tr class="detail-row" id="${detailId}">
+      <td colspan="19">${buildDetailTable(a)}</td>
     </tr>`;
   });
 
   if (!search) {
-    rows += `<tr class="div-row"><td colspan="14">Not sold — no agent reached</td></tr>`;
-    rows += `<tr class="ns-row">
+    rows += `<tr class="div-row"><td colspan="19">Not sold — no agent reached</td></tr>`;
+    rows += `<tr class="agent-row ns-row" onclick="toggleDetail('detail-notsold','icon-notsold')">
+      <td style="width:20px;"><span class="expand-icon" id="icon-notsold">▶</span></td>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">—</td>
       <td><div class="aname" style="color:var(--red);font-size:13px;">No answer / No buyer / No target</div></td>
       <td class="vm">—</td>
       <td class="vm">—</td>
       <td class="r vr">${notSoldCount.toLocaleString()}</td>
       <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
+      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
       <td class="r vm">—</td><td class="r vm">—</td>
+      <td style="min-width:70px;"><div class="bar-bg"></div></td>
       <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
       <td class="r"><span class="badge br">Not sold</span></td>
+    </tr>
+    <tr class="detail-row" id="detail-notsold">
+      <td colspan="19">${buildNotSoldTable()}</td>
     </tr>`;
   }
 
   document.getElementById('tbody').innerHTML =
-    rows || `<tr><td colspan="14" class="no-data">No agents found.</td></tr>`;
+    rows || `<tr><td colspan="19" class="no-data">No agents found.</td></tr>`;
+}
+
+// ─── Per-call detail dropdown ───────────────────────────────────────────────
+function buildDetailTable(a) {
+  if (!a.calls || a.calls.length === 0) {
+    return '<div class="detail-inner"><p style="color:var(--muted);font-size:12px;">No call records in this period.</p></div>';
+  }
+  const sorted = [...a.calls].sort((x,y) => new Date(y.start_time) - new Date(x.start_time));
+
+  const rows = sorted.map(c => {
+    const time = c.start_time ? new Date(c.start_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const date = c.start_time ? new Date(c.start_time).toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const dur  = fmtDur(c.duration);
+    const cs   = (c.status || '').toLowerCase();
+    const isAns  = ANSWERED_S.has(cs);
+    const isLive = LIVE_S.has(cs);
+    const isRec  = (c.receivable === true || c.receivable === 'true') && c.duration >= 60;
+    const statusCls = isLive ? 'vb' : isAns ? 'vg' : 'vm';
+    const statusLbl = isLive ? 'Live' : isAns ? 'Answered' : (c.status || 'No answer');
+    const recLbl  = isRec ? '<span class="vg">Yes</span>' : '<span class="vm">No</span>';
+    const recLink = c.recording_url
+      ? `<a href="${esc(c.recording_url)}" target="_blank" rel="noopener" class="rec-btn" onclick="event.stopPropagation();">▶ Play</a>`
+      : '<span class="vm" style="font-size:11px;">—</span>';
+    return `<tr>
+      <td class="r" style="font-family:var(--font-mono);font-size:11px;">${date} ${time}</td>
+      <td style="font-family:var(--font-mono);font-size:11px;">${esc(c.caller)}</td>
+      <td>${esc(c.caller_city)}, ${esc(c.caller_state)}</td>
+      <td><span class="${statusCls}">${esc(statusLbl)}</span></td>
+      <td class="r" style="font-family:var(--font-mono);font-size:11px;">${dur}</td>
+      <td class="r">${recLbl}</td>
+      <td class="r">${recLink}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="detail-inner">
+    <div class="detail-title">${a.calls.length} call${a.calls.length!==1?'s':''} — ${esc(a.name)}</div>
+    <table class="detail-table">
+      <thead>
+        <tr>
+          <th class="r">Time</th>
+          <th>Caller</th>
+          <th>Location</th>
+          <th>Status</th>
+          <th class="r">Duration</th>
+          <th class="r">Receivable</th>
+          <th class="r">Recording</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function buildNotSoldTable() {
+  if (!notSoldCalls || notSoldCalls.length === 0) {
+    return '<div class="detail-inner"><p style="color:var(--muted);font-size:12px;">No not-sold callers in this period.</p></div>';
+  }
+  const sorted = [...notSoldCalls].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
+
+  const rows = sorted.map(c => {
+    const time = c.start_time ? new Date(c.start_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const date = c.start_time ? new Date(c.start_time).toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const att  = c.attempts > 1
+      ? `<span class="va">${c.attempts} attempts</span>`
+      : '<span class="vm">1 attempt</span>';
+    const recLink = c.recording_url
+      ? `<a href="${esc(c.recording_url)}" target="_blank" rel="noopener" class="rec-btn" onclick="event.stopPropagation();">▶ Play</a>`
+      : '<span class="vm" style="font-size:11px;">—</span>';
+    return `<tr>
+      <td class="r" style="font-family:var(--font-mono);font-size:11px;">${date} ${time}</td>
+      <td style="font-family:var(--font-mono);font-size:11px;">${esc(c.caller)}</td>
+      <td>${esc(c.caller_city)}, ${esc(c.caller_state)}</td>
+      <td><span class="vr">${esc(c.status || 'no-answer')}</span></td>
+      <td class="r">${att}</td>
+      <td class="r" style="font-family:var(--font-mono);font-size:11px;">${fmtDur(c.duration)}</td>
+      <td class="r">${recLink}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="detail-inner">
+    <div class="detail-title">${notSoldCalls.length} unique caller${notSoldCalls.length!==1?'s':''} never reached an agent</div>
+    <table class="detail-table">
+      <thead>
+        <tr>
+          <th class="r">Time</th>
+          <th>Caller</th>
+          <th>Location</th>
+          <th>Status</th>
+          <th class="r">Attempts</th>
+          <th class="r">Duration</th>
+          <th class="r">Recording</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function toggleDetail(detailId, iconId) {
+  const row  = document.getElementById(detailId);
+  const icon = document.getElementById(iconId);
+  if (!row) return;
+  const isOpen = row.classList.contains('open');
+  // Close all other open detail rows first (single-open UX)
+  document.querySelectorAll('.detail-row.open').forEach(r => { if (r !== row) r.classList.remove('open'); });
+  document.querySelectorAll('.expand-icon.open').forEach(i => { if (i !== icon) i.classList.remove('open'); });
+  if (isOpen) {
+    row.classList.remove('open');
+    if (icon) icon.classList.remove('open');
+  } else {
+    row.classList.add('open');
+    if (icon) icon.classList.add('open');
+  }
 }
 
 // ─── Admin override controls (server-side via /overrides KV) ────────────────
@@ -898,7 +1096,7 @@ async function fetchData() {
     document.getElementById('statusText').textContent = 'Setup required';
     document.getElementById('statusText').className = 'st err';
     document.getElementById('dot').className = 'brand-dot error';
-    document.getElementById('tbody').innerHTML = `<tr><td colspan="14" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
+    document.getElementById('tbody').innerHTML = `<tr><td colspan="19" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
     return;
   }
 
@@ -929,7 +1127,7 @@ async function fetchData() {
       Verify <code>worker</code> and <code>token</code> in the URL match your Cloudflare deploy.
       Try <code>${esc(WORKER_URL)}/healthz</code> in a new tab.`;
     document.getElementById('tbody').innerHTML=
-      `<tr><td colspan="14" class="no-data">No data loaded.</td></tr>`;
+      `<tr><td colspan="19" class="no-data">No data loaded.</td></tr>`;
   } finally {
     load.style.display='none';
   }
