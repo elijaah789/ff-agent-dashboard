@@ -249,15 +249,28 @@ const targetIdToName = {};   // populated from /retreaver/targets — call.syste
 const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
 const dialpadCallStats = {}; // populated from /dialpad/calls — Dialpad userId → {rings, answered, missed}
 
-// Admin overrides — keyed by Retreaver target id; value 'paused' or 'unpaused'.
-// While set, the auto-pause loop skips that target so manual state sticks.
-// Persisted to localStorage so overrides survive reload.
+// Admin overrides — keyed by Retreaver target id; value 'paused' or 'active'.
+// Backed by KV on the worker so they persist across browsers/devices and
+// the cron handler can enforce them even when no dashboard tab is open.
+// localStorage is just a fast cache; truth lives at GET /overrides.
 const manualOverrides = (() => {
   try { return JSON.parse(localStorage.getItem('ff_manual_overrides') || '{}'); }
   catch (e) { return {}; }
 })();
-function saveOverrides() {
+function saveOverridesLocal() {
   localStorage.setItem('ff_manual_overrides', JSON.stringify(manualOverrides));
+}
+
+// Fetch the latest overrides from the worker on each refresh.
+async function loadOverridesFromServer() {
+  try {
+    const res = await authedFetch('/overrides');
+    if (!res.ok) return;
+    const server = await res.json();
+    Object.keys(manualOverrides).forEach(k => delete manualOverrides[k]);
+    Object.assign(manualOverrides, server);
+    saveOverridesLocal();
+  } catch (e) { console.warn('loadOverridesFromServer failed:', e.message); }
 }
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
@@ -614,8 +627,8 @@ function renderTable() {
     if (!targetId) {
       overrideCell = '<span class="vm" style="font-size:10px;font-family:var(--font-mono);">—</span>';
     } else if (overrideState === 'paused') {
-      overrideCell = `<button class="ovr-btn paused" onclick="setOverride(${targetId},'unpaused')">⏸ FORCED PAUSED <span class="x" onclick="event.stopPropagation();clearOverride(${targetId})">×</span></button>`;
-    } else if (overrideState === 'unpaused') {
+      overrideCell = `<button class="ovr-btn paused" onclick="setOverride(${targetId},'active')">⏸ FORCED PAUSED <span class="x" onclick="event.stopPropagation();clearOverride(${targetId})">×</span></button>`;
+    } else if (overrideState === 'active') {
       overrideCell = `<button class="ovr-btn unpaused" onclick="setOverride(${targetId},'paused')">▶ FORCED ACTIVE <span class="x" onclick="event.stopPropagation();clearOverride(${targetId})">×</span></button>`;
     } else {
       overrideCell = `<button class="ovr-btn auto" onclick="setOverride(${targetId},'paused')">auto · click to pause</button>`;
@@ -668,21 +681,34 @@ function renderTable() {
     rows || `<tr><td colspan="14" class="no-data">No agents found.</td></tr>`;
 }
 
-// ─── Admin override controls ────────────────────────────────────────────────
+// ─── Admin override controls (server-side via /overrides KV) ────────────────
 async function setOverride(targetId, state) {
-  // state = 'paused' or 'unpaused' — sets manual override and calls Retreaver immediately
+  // state = 'paused' or 'active' — POSTs to worker which writes KV + sets Retreaver
+  // The worker cron then enforces this every minute, even with the dashboard closed.
   manualOverrides[targetId] = state;
-  saveOverrides();
-  await setTargetPaused(targetId, state === 'paused');
+  saveOverridesLocal();
   renderTable();
+  try {
+    await authedFetch(`/overrides/${targetId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state }),
+    });
+  } catch (e) {
+    console.warn(`setOverride ${targetId} failed:`, e.message);
+  }
 }
 
 async function clearOverride(targetId) {
-  // Clear the override; auto-pause loop resumes on the next 30s tick.
-  // Don't touch the paused state immediately — the next loop tick will sync from Dialpad.
+  // DELETE removes from KV; next cron tick will sync target back to Dialpad presence.
   delete manualOverrides[targetId];
-  saveOverrides();
+  saveOverridesLocal();
   renderTable();
+  try {
+    await authedFetch(`/overrides/${targetId}`, { method: 'DELETE' });
+  } catch (e) {
+    console.warn(`clearOverride ${targetId} failed:`, e.message);
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -891,6 +917,7 @@ async function fetchData() {
     const { calls, start, end } = await fetchAllPages();
     await fetchTargetCaps();
     await fetchDialpadCallStats();
+    await loadOverridesFromServer();
     processCalls(calls, start, end);
     dot.className='brand-dot live'; st.className='st live';
     st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
