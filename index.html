@@ -342,8 +342,22 @@ function getRange(val) {
 }
 
 // ─── Retreaver: fetch all pages ───────────────────────────────────────────────
+// Pad API window by ±1 day. The Retreaver API treats start/end as UTC midnights,
+// but our local-day "today" can span up to 2 UTC dates depending on timezone
+// (US is 4-8h behind UTC, so Pacific evening is already next-day UTC).
+// Without padding, calls that happen in the user's local "today" but cross
+// into the next UTC day get dropped from the API response and never render.
+// The client-side date filter below still trims to the actual local-day range.
+function padDate(ymd, days) {
+  const d = new Date(ymd + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
 async function fetchAllPages() {
   const { start, end } = getRange(document.getElementById('rangeSelect').value);
+  const apiStart = padDate(start, -1);
+  const apiEnd   = padDate(end,   +1);
   const prog = document.getElementById('prog');
   prog.style.display = 'block';
 
@@ -353,7 +367,7 @@ async function fetchAllPages() {
 
   while (page <= 200) {
     prog.textContent = `Loading page ${page}... (${all.length.toLocaleString()} calls so far)`;
-    const res = await authedFetch(`/retreaver/calls?start=${start}&end=${end}&page=${page}`);
+    const res = await authedFetch(`/retreaver/calls?start=${apiStart}&end=${apiEnd}&page=${page}`);
     if (!res.ok) throw new Error(`HTTP ${res.status} on page ${page}`);
 
     const text = await res.text();
@@ -979,9 +993,12 @@ async function testRetreaverPause() {
 // catches failover misses Retreaver collapses into a single call record.
 async function fetchDialpadCallStats() {
   const { start, end } = getRange(document.getElementById('rangeSelect').value);
-  // Dialpad rejects started_before in the future — cap to now()
-  const startMs = new Date(start + 'T00:00:00Z').getTime();
-  const endMs   = Math.min(new Date(end + 'T23:59:59Z').getTime(), Date.now());
+  // Use local-day boundaries (NOT UTC). 'T00:00:00' without Z = local time.
+  // This matches what the user expects "today" to mean (their wall clock)
+  // and avoids dropping calls that span the UTC midnight boundary.
+  // Dialpad rejects started_before in the future — cap to now().
+  const startMs = new Date(start + 'T00:00:00').getTime();
+  const endMs   = Math.min(new Date(end + 'T23:59:59').getTime(), Date.now());
 
   // Reset
   Object.keys(dialpadCallStats).forEach(k => delete dialpadCallStats[k]);
