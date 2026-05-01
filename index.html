@@ -906,12 +906,14 @@ async function clearOverride(targetId) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function capCell(a) {
+  // Daily cap fills based on receivable (60s+ finished) calls — that's what
+  // counts toward the agent's daily billable allotment, not raw call count.
   const target = phoneToTarget[a.dialedNumber];
   if (!target) return '<span class="vm">—</span>';
   const cap = targetCaps[target.targetId];
   if (!cap) return '<span class="vm">—</span>';
   if (cap.daily === null) return '<span class="vm">No cap</span>';
-  const used = a.unique;
+  const used = a.receivable;
   const limit = cap.daily;
   const pct = Math.round((used / limit) * 100);
   const cls = pct >= 90 ? 'vr' : pct >= 70 ? 'va' : 'vg';
