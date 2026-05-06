@@ -106,6 +106,27 @@
   .expand-icon.open { transform:rotate(90deg); color:var(--accent); }
 
   /* Per-call detail dropdown */
+  .all-calls-panel { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:24px; }
+  .all-calls-panel > summary { list-style:none; cursor:pointer; padding:14px 18px; display:flex; align-items:center; gap:12px; user-select:none; }
+  .all-calls-panel > summary::-webkit-details-marker { display:none; }
+  .all-calls-panel > summary::before { content:'▸'; color:var(--muted); font-size:11px; transition:transform 0.15s ease; }
+  .all-calls-panel[open] > summary::before { transform:rotate(90deg); }
+  .all-calls-panel .acp-title { font-weight:600; font-size:13px; color:var(--text); }
+  .all-calls-panel .acp-count { font-family:var(--font-mono); font-size:12px; color:var(--accent); padding:2px 8px; background:rgba(0,229,160,0.08); border-radius:6px; }
+  .all-calls-panel .acp-hint { font-family:var(--font-mono); font-size:10px; color:var(--muted); margin-left:auto; }
+  .all-calls-panel table { width:100%; border-collapse:collapse; font-size:12px; }
+  .all-calls-panel thead th { padding:8px 14px; text-align:left; font-family:var(--font-mono); font-size:9px; letter-spacing:0.07em; text-transform:uppercase; color:var(--muted); border-top:1px solid var(--border); border-bottom:1px solid var(--border); font-weight:400; white-space:nowrap; background:rgba(0,0,0,0.15); }
+  .all-calls-panel thead th.r { text-align:right; }
+  .all-calls-panel tbody td { padding:8px 14px; border-bottom:1px solid rgba(255,255,255,0.04); color:var(--text); vertical-align:middle; }
+  .all-calls-panel tbody td.r { text-align:right; font-family:var(--font-mono); font-size:11px; }
+  .all-calls-panel tbody tr:last-child td { border-bottom:none; }
+  .all-calls-panel tbody tr:hover { background:rgba(255,255,255,0.02); }
+  .acp-pill { display:inline-block; padding:2px 8px; border-radius:6px; font-family:var(--font-mono); font-size:10px; }
+  .acp-pill.connected { background:rgba(0,229,160,0.12); color:var(--accent); }
+  .acp-pill.missed    { background:rgba(239,68,68,0.12); color:var(--red); }
+  .acp-pill.short     { background:rgba(245,158,11,0.12); color:var(--amber); }
+  .acp-cb-yes { color:var(--accent); font-weight:600; }
+  .acp-cb-no  { color:var(--muted); }
   .detail-inner { padding:12px 16px 16px 40px; }
   .detail-title { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:10px; }
   .detail-table { width:100%; border-collapse:collapse; font-size:12px; }
@@ -179,9 +200,19 @@
     <div class="mc r"><div class="ml">Not sold</div>      <div class="mv r" id="mNotSold">—</div></div>
     <div class="mc p"><div class="ml">10min+ calls</div>  <div class="mv p" id="mLongCalls">—</div></div>
     <div class="mc b"><div class="ml">Live now</div>      <div class="mv b" id="mLive">—</div></div>
+    <div class="mc g"><div class="ml">Callbacks</div>     <div class="mv g" id="mCallbacks">—</div></div>
     <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
   </div>
+
+  <details id="allCallsPanel" class="all-calls-panel" open>
+    <summary>
+      <span class="acp-title">All calls</span>
+      <span class="acp-count" id="allCallsCount">—</span>
+      <span class="acp-hint">click row to expand · ▶ to play recording · ✓ = agent called this number back from Dialpad</span>
+    </summary>
+    <div id="allCallsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
 
   <div class="controls">
     <div class="sw">
@@ -267,6 +298,8 @@ let notSoldCount = 0;
 let notSoldCalls = []; // per-call details for the Not-sold expandable row
 let countdown    = REFRESH;
 let timer        = null;
+let dialpadOutbound = []; // raw outbound dials from /dialpad/calls?direction=outbound
+let totCallbacks = 0;
 
 const phoneToTarget = {};
 const targetCaps    = {};
@@ -615,6 +648,28 @@ function processCalls(calls, start, end) {
   // Answer rate = answered / total calls routed (matches Wolpert)
   const rate = totTotal ? Math.round((totAnswered/totTotal)*100) : 0;
 
+  // ─── Callback cross-reference ──────────────────────────────────────────────
+  // For each inbound call, was the same caller_number dialed back from Dialpad
+  // AFTER the inbound start_time? If yes → callback ✓. Index: 10-digit phone
+  // → sorted array of outbound start_ms.
+  const callbackIndex = new Map();
+  dialpadOutbound.forEach(o => {
+    const num = normalizePhone(o.external_number);
+    if (!num) return;
+    const t = Number(o.date_started || o.started_after || 0);
+    if (!t) return;
+    if (!callbackIndex.has(num)) callbackIndex.set(num, []);
+    callbackIndex.get(num).push(t);
+  });
+  totCallbacks = 0;
+  calls.forEach(c => {
+    const num = normalizePhone(c.caller);
+    const inboundMs = new Date(c.start_time || 0).getTime();
+    const hits = callbackIndex.get(num);
+    c._callback = !!(hits && hits.some(t => t > inboundMs));
+    if (c._callback) totCallbacks++;
+  });
+
   document.getElementById('mTotal').textContent      = totTotal.toLocaleString();
   document.getElementById('mUnique').textContent     = totUnique.toLocaleString();
   document.getElementById('mAnswered').textContent   = totAnswered.toLocaleString();
@@ -622,9 +677,13 @@ function processCalls(calls, start, end) {
   document.getElementById('mNotSold').textContent    = totNotSold.toLocaleString();
   document.getElementById('mLongCalls').textContent  = totLongCalls.toLocaleString();
   document.getElementById('mLive').textContent       = totLive.toLocaleString();
+  document.getElementById('mCallbacks').textContent  = totCallbacks.toLocaleString();
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+
+  document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
+  document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
 
   const liveAgents = allAgents.filter(a => a.live > 0);
   const banner = document.getElementById('liveBanner');
@@ -857,6 +916,72 @@ function buildNotSoldTable() {
   </div>`;
 }
 
+// ─── All Calls panel ────────────────────────────────────────────────────────
+// Flat table of every call in the current date range. Newest first.
+// Columns: Time | Caller | Location | Status | Duration | Outcome | Callback | Recording
+function fmtPhoneE164(s) {
+  const d = (s || '').replace(/\D/g,'');
+  const ten = d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
+  if (ten.length !== 10) return s || '—';
+  return `(${ten.slice(0,3)}) ${ten.slice(3,6)}-${ten.slice(6)}`;
+}
+
+function buildAllCallsTable(calls) {
+  if (!calls || calls.length === 0) {
+    return '<p class="no-data" style="padding:16px;">No calls in this period.</p>';
+  }
+  const sorted = [...calls].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
+  const rows = sorted.map(c => {
+    const t   = c.start_time ? new Date(c.start_time) : null;
+    const tm  = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const dt  = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const dur = parseInt(c.total_duration || 0, 10);
+    const s   = (c.status || '').toLowerCase();
+
+    let outcome, pillCls;
+    if (LIVE_S.has(s))                   { outcome = c.target_name || 'Live'; pillCls = 'connected'; }
+    else if (c.target_name && dur >= 30) { outcome = c.target_name;            pillCls = 'connected'; }
+    else if (c.target_name)              { outcome = `${c.target_name} (${dur}s)`; pillCls = 'short'; }
+    else if (s === 'no-answer')          { outcome = 'Missed';                 pillCls = 'missed'; }
+    else if (dur > 0 && dur < 10)        { outcome = `Hung up (${dur}s)`;       pillCls = 'short'; }
+    else                                  { outcome = c.status || '—';          pillCls = 'missed'; }
+
+    const cb = c._callback
+      ? '<span class="acp-cb-yes">✓ Yes</span>'
+      : '<span class="acp-cb-no">—</span>';
+    const rec = c.recording_url
+      ? `<a href="${esc(c.recording_url)}" target="_blank" rel="noopener" class="rec-btn">▶ Play</a>`
+      : '<span class="vm" style="font-size:11px;">—</span>';
+
+    return `<tr>
+      <td class="r" style="white-space:nowrap;">${dt} ${tm}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;">${esc(fmtPhoneE164(c.caller))}</td>
+      <td>${esc(c.caller_city || '—')}, ${esc(c.caller_state || '—')}</td>
+      <td><span class="acp-pill ${pillCls}">${esc(c.status || '—')}</span></td>
+      <td class="r">${fmtDur(dur)}</td>
+      <td>${esc(outcome)}</td>
+      <td class="r">${cb}</td>
+      <td class="r">${rec}</td>
+    </tr>`;
+  }).join('');
+
+  return `<table>
+    <thead>
+      <tr>
+        <th class="r">Time</th>
+        <th>Caller</th>
+        <th>Location</th>
+        <th>Status</th>
+        <th class="r">Duration</th>
+        <th>Outcome</th>
+        <th class="r">Callback?</th>
+        <th class="r">Recording</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 function toggleDetail(detailId, iconId) {
   const row  = document.getElementById(detailId);
   const icon = document.getElementById(iconId);
@@ -971,6 +1096,25 @@ async function testRetreaverPause() {
   setTimeout(() => { btn.textContent = 'Pause unavailable now'; btn.disabled = false; }, 5000);
 }
 
+async function fetchDialpadOutbound(start, end) {
+  // Pull all outbound dials in the same date range as Retreaver. The worker
+  // paginates Dialpad and filters direction=outbound server-side. If the
+  // worker route fails (older deploy, missing scope), degrade silently —
+  // the panel still renders, callback column just stays empty.
+  dialpadOutbound = [];
+  try {
+    const res = await authedFetch(`/dialpad/calls?start=${start}&end=${end}&direction=outbound`);
+    if (!res.ok) {
+      console.warn(`fetchDialpadOutbound: HTTP ${res.status}`);
+      return;
+    }
+    const body = await res.json();
+    dialpadOutbound = Array.isArray(body?.calls) ? body.calls : [];
+  } catch (e) {
+    console.warn('fetchDialpadOutbound failed:', e.message);
+  }
+}
+
 async function fetchTargetCaps() {
   try {
     let page = 1;
@@ -1070,6 +1214,7 @@ async function fetchData() {
     const { calls, start, end } = await fetchAllPages();
     await fetchTargetCaps();
     await loadOverridesFromServer();
+    await fetchDialpadOutbound(start, end);
     processCalls(calls, start, end);
     dot.className='brand-dot live'; st.className='st live';
     st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
