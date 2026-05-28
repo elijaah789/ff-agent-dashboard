@@ -87,6 +87,9 @@
   .ovr-mini .x { color:var(--muted); margin-left:2px; cursor:pointer; padding:0 2px; }
   .ovr-mini .x:hover { color:var(--red); }
 
+  .editable-val { cursor:pointer; border-bottom:1px dashed rgba(255,255,255,0.2); padding-bottom:1px; transition:border-color 0.15s; }
+  .editable-val:hover { border-bottom-color:var(--accent); }
+
   .bar-bg { background:rgba(255,255,255,0.06); border-radius:99px; height:4px; min-width:60px; }
   .bar-fill { background:var(--accent); border-radius:99px; height:4px; opacity:0.75; transition:width 0.5s; }
   .vg{color:var(--accent);font-weight:500;} .vr{color:var(--red);font-weight:500;}
@@ -214,6 +217,15 @@
     <div id="allCallsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
   </details>
 
+  <details id="allOutboundPanel" class="all-calls-panel">
+    <summary>
+      <span class="acp-title">All outbound calls</span>
+      <span class="acp-count" id="allOutboundCount">—</span>
+      <span class="acp-hint">outbound dials made by agents from Dialpad in this date range</span>
+    </summary>
+    <div id="allOutboundBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
+
   <div class="controls">
     <div class="sw">
       <span class="si">⌕</span>
@@ -236,7 +248,9 @@
           <th class="r">Receivable (60s+)</th>
           <th class="r">10min+ calls</th>
           <th class="r">Live now</th>
+          <th class="r">Outbound</th>
           <th class="r">Answer rate</th>
+          <th class="r">Weight</th>
           <th class="r">Daily cap</th>
           <th class="r">Duration</th>
           <th>Volume</th>
@@ -244,7 +258,7 @@
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="15" class="no-data">Loading...</td></tr>
+        <tr><td colspan="17" class="no-data">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -304,6 +318,7 @@ let totCallbacks = 0;
 const phoneToTarget = {};
 const targetCaps    = {};
 const dialpadStatus = {};
+const dialpadUserIdToName = {}; // populated from /dialpad/users — Dialpad user id → display name (for outbound attribution)
 const targetIdToName = {};   // populated from /retreaver/targets — call.system_target_id → target.name
 const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
 
@@ -459,6 +474,7 @@ async function fetchDialpadStatuses() {
 
     dpDebug += `  Users fetched: ${users.length}\n`;
     Object.keys(dialpadStatus).forEach(k => delete dialpadStatus[k]);
+    Object.keys(dialpadUserIdToName).forEach(k => delete dialpadUserIdToName[k]);
     const retreaverPauses = [];
 
     users.forEach(user => {
@@ -471,6 +487,7 @@ async function fetchDialpadStatuses() {
       const name = user.display_name || `${user.first_name||''} ${user.last_name||''}`.trim();
       const nameKey = name.toLowerCase().replace(/[^a-z]/g,'');
 
+      if (user.id && name) dialpadUserIdToName[String(user.id)] = name;
       dialpadStatus[nameKey] = { name, status: dpStatusVal, userId: user.id, phone: phones[0]||'' };
       phones.forEach(phone => {
         dialpadStatus[phone] = { name, status: dpStatusVal, userId: user.id, phone };
@@ -592,7 +609,7 @@ function processCalls(calls, start, end) {
     if (!agents[agent]) agents[agent] = {
       name: agent, total:0, unique:0, callers:new Set(),
       answered:0, live:0, dur:0,
-      receivable:0, longCalls:0, calls:[],
+      receivable:0, longCalls:0, outbound:0, calls:[],
       dialedNumber: normalizePhone(call.dialed_number || '')
     };
 
@@ -636,7 +653,7 @@ function processCalls(calls, start, end) {
       agents[name] = {
         name, total:0, unique:0, callers:new Set(),
         answered:0, live:0, dur:0,
-        receivable:0, longCalls:0, calls:[],
+        receivable:0, longCalls:0, outbound:0, calls:[],
         dialedNumber: targetIdToPhone[targetId] || ''
       };
     }
@@ -670,6 +687,28 @@ function processCalls(calls, start, end) {
     if (c._callback) totCallbacks++;
   });
 
+  // ─── Per-agent outbound attribution ────────────────────────────────────────
+  // Each Dialpad outbound record carries the dialing agent. Field shape varies
+  // by API version: try nested target.{id,name}, flat target_id/target_name,
+  // and fall back to dialpadUserIdToName lookup. Match Dialpad name to
+  // Retreaver agent name with the same fuzzy check used by the presence pill.
+  dialpadOutbound.forEach(o => {
+    const tgtId   = (o.target && o.target.id) || o.target_id || null;
+    const tgtName = (o.target && o.target.name) || o.target_name
+                   || (tgtId != null ? dialpadUserIdToName[String(tgtId)] : null)
+                   || '';
+    if (!tgtName) return;
+    const dpLower = tgtName.toLowerCase();
+    const match = Object.values(agents).find(a => {
+      const an = a.name.toLowerCase();
+      if (an === dpLower) return true;
+      const anParts = an.split(' ').filter(p => p.length > 2);
+      const dpParts = dpLower.split(' ').filter(p => p.length > 2);
+      return anParts.some(p => dpLower.includes(p)) || dpParts.some(p => an.includes(p));
+    });
+    if (match) match.outbound++;
+  });
+
   document.getElementById('mTotal').textContent      = totTotal.toLocaleString();
   document.getElementById('mUnique').textContent     = totUnique.toLocaleString();
   document.getElementById('mAnswered').textContent   = totAnswered.toLocaleString();
@@ -684,6 +723,8 @@ function processCalls(calls, start, end) {
 
   document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
   document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
+  document.getElementById('allOutboundCount').textContent = dialpadOutbound.length.toLocaleString();
+  document.getElementById('allOutboundBody').innerHTML    = buildOutboundTable();
 
   const liveAgents = allAgents.filter(a => a.live > 0);
   const banner = document.getElementById('liveBanner');
@@ -786,19 +827,21 @@ function renderTable() {
       <td class="r vp">${a.receivable>0?a.receivable.toLocaleString():'<span class="vm">—</span>'}</td>
       <td class="r vp">${a.longCalls>0?a.longCalls:'<span class="vm">—</span>'}</td>
       <td class="r vb">${a.live>0?a.live:'<span class="vm">—</span>'}</td>
+      <td class="r vp">${a.outbound>0?a.outbound.toLocaleString():'<span class="vm">—</span>'}</td>
       <td class="r ${rClass}">${rate}%</td>
+      <td class="r vm">${weightCell(a)}</td>
       <td class="r vm">${capCell(a)}</td>
       <td class="r vm">${fmtDur(a.dur)}</td>
       <td style="min-width:70px;"><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
       <td class="r">${badge}</td>
     </tr>
     <tr class="detail-row" id="${detailId}">
-      <td colspan="15">${buildDetailTable(a)}</td>
+      <td colspan="17">${buildDetailTable(a)}</td>
     </tr>`;
   });
 
   if (!search) {
-    rows += `<tr class="div-row"><td colspan="15">Not sold — no agent reached</td></tr>`;
+    rows += `<tr class="div-row"><td colspan="17">Not sold — no agent reached</td></tr>`;
     rows += `<tr class="agent-row ns-row" onclick="toggleDetail('detail-notsold','icon-notsold')">
       <td style="width:20px;"><span class="expand-icon" id="icon-notsold">▶</span></td>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">—</td>
@@ -807,17 +850,18 @@ function renderTable() {
       <td class="r vr">${notSoldCount.toLocaleString()}</td>
       <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
       <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
-      <td class="r vm">—</td><td class="r vm">—</td>
+      <td class="r vm">—</td><td class="r vm">—</td><td class="r vm">—</td>
+      <td class="r vm">—</td>
       <td style="min-width:70px;"><div class="bar-bg"></div></td>
       <td class="r"><span class="badge br">Not sold</span></td>
     </tr>
     <tr class="detail-row" id="detail-notsold">
-      <td colspan="15">${buildNotSoldTable()}</td>
+      <td colspan="17">${buildNotSoldTable()}</td>
     </tr>`;
   }
 
   document.getElementById('tbody').innerHTML =
-    rows || `<tr><td colspan="15" class="no-data">No agents found.</td></tr>`;
+    rows || `<tr><td colspan="17" class="no-data">No agents found.</td></tr>`;
 }
 
 // ─── Per-call detail dropdown ───────────────────────────────────────────────
@@ -982,6 +1026,53 @@ function buildAllCallsTable(calls) {
   </table>`;
 }
 
+function buildOutboundTable() {
+  if (!dialpadOutbound || dialpadOutbound.length === 0) {
+    return '<p class="no-data" style="padding:16px;">No outbound calls in this period.</p>';
+  }
+  const tsOf = (o) => Number(o.date_started || o.started_after || o.started_at_ms || 0);
+  const sorted = [...dialpadOutbound].sort((a,b) => tsOf(b) - tsOf(a));
+  const rows = sorted.map(o => {
+    const ts = tsOf(o);
+    const t  = ts ? new Date(ts) : null;
+    const tm = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const dt = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const tgtId   = (o.target && o.target.id) || o.target_id || null;
+    const tgtName = (o.target && o.target.name) || o.target_name
+                   || (tgtId != null ? dialpadUserIdToName[String(tgtId)] : null)
+                   || '—';
+    let dur = parseInt(o.duration || 0, 10);
+    if ((!dur || Number.isNaN(dur)) && o.duration_ms) dur = Math.round(Number(o.duration_ms) / 1000);
+    if ((!dur || Number.isNaN(dur)) && o.date_ended && ts) {
+      dur = Math.round((Number(o.date_ended) - ts) / 1000);
+    }
+    const connected = o.was_answered === true
+                   || (o.state === 'hangup' && (o.connected_at_ms || o.date_connected) && dur > 0);
+    const pillCls = connected ? 'connected' : 'missed';
+    const pillTxt = connected ? 'Connected' : 'No answer';
+    return `<tr>
+      <td class="r" style="white-space:nowrap;">${dt} ${tm}</td>
+      <td>${esc(tgtName)}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;">${esc(fmtPhoneE164(o.external_number))}</td>
+      <td class="r">${fmtDur(dur)}</td>
+      <td class="r"><span class="acp-pill ${pillCls}">${pillTxt}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `<table>
+    <thead>
+      <tr>
+        <th class="r">Time</th>
+        <th>Agent</th>
+        <th>External #</th>
+        <th class="r">Duration</th>
+        <th class="r">Result</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 function toggleDetail(detailId, iconId) {
   const row  = document.getElementById(detailId);
   const icon = document.getElementById(iconId);
@@ -1031,18 +1122,80 @@ async function clearOverride(targetId) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function capCell(a) {
-  // Daily cap fills based on receivable (60s+ finished) calls — that's what
-  // counts toward the agent's daily billable allotment, not raw call count.
   const target = phoneToTarget[a.dialedNumber];
   if (!target) return '<span class="vm">—</span>';
   const cap = targetCaps[target.targetId];
   if (!cap) return '<span class="vm">—</span>';
-  if (cap.daily === null) return '<span class="vm">No cap</span>';
+  const tid = target.targetId;
+  if (cap.daily === null) {
+    return `<span class="vm editable-val" onclick="event.stopPropagation();promptCap(${tid})" title="Click to set cap" style="cursor:pointer;">∞</span>`;
+  }
   const used = a.receivable;
   const limit = cap.daily;
   const pct = Math.round((used / limit) * 100);
   const cls = pct >= 90 ? 'vr' : pct >= 70 ? 'va' : 'vg';
-  return '<span class="' + cls + '">' + used + '/' + limit + '</span>';
+  return `<span class="${cls} editable-val" onclick="event.stopPropagation();promptCap(${tid})" title="Click to change cap" style="cursor:pointer;">${used}/${limit}</span>`;
+}
+
+function weightCell(a) {
+  const target = phoneToTarget[a.dialedNumber];
+  if (!target) return '<span class="vm">—</span>';
+  const cap = targetCaps[target.targetId];
+  if (!cap) return '<span class="vm">—</span>';
+  const tid = target.targetId;
+  const w = cap.weight || 1;
+  return `<span class="vb editable-val" onclick="event.stopPropagation();promptWeight(${tid})" title="Click to change weight" style="cursor:pointer;">${w}</span>`;
+}
+
+async function promptWeight(targetId) {
+  const cap = targetCaps[targetId];
+  const current = cap ? cap.weight : 1;
+  const name = targetIdToName[targetId] || `Target ${targetId}`;
+  const input = prompt(`Set weight for ${name}\nCurrent: ${current}\n\nHigher weight = more calls routed to this agent.\n(Enter a number 1-100)`, current);
+  if (input === null) return;
+  const val = parseInt(input, 10);
+  if (isNaN(val) || val < 1 || val > 100) { alert('Enter a number between 1 and 100.'); return; }
+  try {
+    const res = await authedFetch(`/retreaver/targets/${targetId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ weight: val }),
+    });
+    if (res.ok) {
+      targetCaps[targetId].weight = val;
+      renderTable();
+    } else {
+      alert('Failed to update weight: HTTP ' + res.status);
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function promptCap(targetId) {
+  const cap = targetCaps[targetId];
+  const current = cap && cap.daily !== null ? cap.daily : 'unlimited';
+  const name = targetIdToName[targetId] || `Target ${targetId}`;
+  const input = prompt(`Set daily call cap for ${name}\nCurrent: ${current}\n\nEnter a number (e.g. 10) or type "unlimited" for no cap.`, current);
+  if (input === null) return;
+  let val = null;
+  if (input.trim().toLowerCase() === 'unlimited' || input.trim() === '0' || input.trim() === '') {
+    val = null;
+  } else {
+    val = parseInt(input, 10);
+    if (isNaN(val) || val < 1) { alert('Enter a positive number or "unlimited".'); return; }
+  }
+  try {
+    const res = await authedFetch(`/retreaver/targets/${targetId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ daily_cap: val }),
+    });
+    if (res.ok) {
+      targetCaps[targetId].daily = val;
+      renderTable();
+    } else {
+      alert('Failed to update cap: HTTP ' + res.status);
+    }
+  } catch(e) { alert('Error: ' + e.message); }
 }
 
 function fmtDur(s) {
@@ -1136,6 +1289,7 @@ async function fetchTargetCaps() {
           hardFilled:   hard  ? hard.filled  : 0,
           concurrency:  t.concurrency_cap || null,
           inProgress:   t.calls_in_progress || 0,
+          weight:       t.weight || 1,
         };
         // Build the id→name + id→phone maps used as fallback when call.tid is null
         if (t.id) {
@@ -1195,7 +1349,7 @@ async function fetchData() {
     document.getElementById('statusText').textContent = 'Setup required';
     document.getElementById('statusText').className = 'st err';
     document.getElementById('dot').className = 'brand-dot error';
-    document.getElementById('tbody').innerHTML = `<tr><td colspan="15" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
+    document.getElementById('tbody').innerHTML = `<tr><td colspan="17" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
     return;
   }
 
@@ -1226,7 +1380,7 @@ async function fetchData() {
       Verify <code>worker</code> and <code>token</code> in the URL match your Cloudflare deploy.
       Try <code>${esc(WORKER_URL)}/healthz</code> in a new tab.`;
     document.getElementById('tbody').innerHTML=
-      `<tr><td colspan="15" class="no-data">No data loaded.</td></tr>`;
+      `<tr><td colspan="17" class="no-data">No data loaded.</td></tr>`;
   } finally {
     load.style.display='none';
   }
