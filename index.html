@@ -219,6 +219,7 @@
     <div class="mc g"><div class="ml">Answered</div>      <div class="mv g" id="mAnswered">—</div></div>
     <div class="mc p"><div class="ml">Receivable</div>    <div class="mv p" id="mReceivable">—</div></div>
     <div class="mc r"><div class="ml">Not sold</div>      <div class="mv r" id="mNotSold">—</div></div>
+    <div class="mc r"><div class="ml">Missed calls</div>  <div class="mv r" id="mMissed">—</div></div>
     <div class="mc p"><div class="ml">10min+ calls</div>  <div class="mv p" id="mLongCalls">—</div></div>
     <div class="mc b"><div class="ml">Live now</div>      <div class="mv b" id="mLive">—</div></div>
     <div class="mc g"><div class="ml">Callbacks</div>     <div class="mv g" id="mCallbacks">—</div></div>
@@ -761,6 +762,9 @@ function processCalls(calls, start, end) {
 
   // Answer rate = answered / total calls routed (matches Wolpert)
   const rate = totTotal ? Math.round((totAnswered/totTotal)*100) : 0;
+  // Missed = reached an agent's phone but not answered and not still live.
+  // Total routed decomposes cleanly into Answered + Missed + Live.
+  const totMissed = Math.max(0, totTotal - totAnswered - totLive);
 
   // ─── Callback cross-reference ──────────────────────────────────────────────
   // For each inbound call, was the same caller_number dialed back from Dialpad
@@ -813,6 +817,7 @@ function processCalls(calls, start, end) {
   document.getElementById('mNotSold').textContent    = totNotSold.toLocaleString();
   document.getElementById('mLongCalls').textContent  = totLongCalls.toLocaleString();
   document.getElementById('mLive').textContent       = totLive.toLocaleString();
+  document.getElementById('mMissed').textContent     = totMissed.toLocaleString();
   document.getElementById('mCallbacks').textContent  = totCallbacks.toLocaleString();
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
