@@ -263,6 +263,15 @@
     </table>
   </div>
 
+  <details id="eternaPanel" class="all-calls-panel" style="margin-top:24px;">
+    <summary>
+      <span class="acp-title">Eterna Agents (Dialpad ring group)</span>
+      <span class="acp-count" id="eternaCount">—</span>
+      <span class="acp-hint">who answered when the shared Eterna line rings all agents · click a row for calls + recordings</span>
+    </summary>
+    <div id="eternaBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
+
   <div class="footer">
     <span id="lastUpdated"></span>
     <div style="display:flex;gap:14px;">
@@ -314,6 +323,8 @@ let countdown    = REFRESH;
 let timer        = null;
 let dialpadOutbound = []; // raw outbound dials from /dialpad/calls?direction=outbound
 let totCallbacks = 0;
+let eternaData      = null; // /dialpad/eterna-agents response (account 2 ring-group attribution)
+const eternaRecCache = {};  // call_id → resolved recording URL (null = none), lazy-filled on click
 
 const phoneToTarget = {};
 const targetCaps    = {};
@@ -1268,6 +1279,138 @@ async function fetchDialpadOutbound(start, end) {
   }
 }
 
+// ─── Eterna ring-group: per-Dialpad-user attribution ────────────────────────
+// The Eterna buyer is ONE Retreaver target that routes to ONE shared Dialpad
+// line ringing all ~20 Eterna users. Retreaver can't see who picked up — Dialpad
+// can. The worker's /dialpad/eterna-agents endpoint clusters the fanned per-user
+// records and credits the answerer. Degrades silently if the route is missing.
+async function fetchEternaAgents(start, end) {
+  eternaData = null;
+  try {
+    const res = await authedFetch(`/dialpad/eterna-agents?start=${start}&end=${end}`);
+    if (!res.ok) { console.warn(`fetchEternaAgents: HTTP ${res.status}`); return; }
+    eternaData = await res.json();
+  } catch (e) {
+    console.warn('fetchEternaAgents failed:', e.message);
+  }
+}
+
+function renderEternaPanel() {
+  const countEl = document.getElementById('eternaCount');
+  const bodyEl  = document.getElementById('eternaBody');
+  if (!countEl || !bodyEl) return;
+
+  if (!eternaData || !Array.isArray(eternaData.agents)) {
+    countEl.textContent = '—';
+    bodyEl.innerHTML = '<p class="no-data" style="padding:16px;">No Eterna data — endpoint unavailable on this worker deploy, or no calls in range.</p>';
+    return;
+  }
+  const agents = eternaData.agents;
+  const calls  = Array.isArray(eternaData.calls) ? eternaData.calls : [];
+  countEl.textContent = `${(eternaData.answered_calls||0).toLocaleString()}/${(eternaData.total_calls||0).toLocaleString()} answered`;
+
+  if (agents.length === 0) {
+    bodyEl.innerHTML = '<p class="no-data" style="padding:16px;">No Eterna calls in this period.</p>';
+    return;
+  }
+
+  // Group answered calls under the user who answered them
+  const byUser = {};
+  calls.forEach(c => {
+    if (c.answered_by_id) (byUser[c.answered_by_id] = byUser[c.answered_by_id] || []).push(c);
+  });
+
+  const maxAns = Math.max(...agents.map(a => a.answered), 1);
+  const rows = agents.map((a, i) => {
+    const barW = Math.round((a.answered / maxAns) * 100);
+    const did = `et-detail-${i}`, iid = `et-icon-${i}`;
+    const last = a.last_call_ms
+      ? new Date(a.last_call_ms).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+      : '—';
+    const sub = buildEternaCallList(byUser[a.user_id] || [], a.name);
+    return `<tr class="agent-row" onclick="toggleDetail('${did}','${iid}')">
+      <td style="width:20px;"><span class="expand-icon" id="${iid}">▶</span></td>
+      <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${i+1}</td>
+      <td><div class="aname">${esc(a.name)}</div></td>
+      <td class="r vg">${a.answered.toLocaleString()}</td>
+      <td class="r vm">${a.offered.toLocaleString()}</td>
+      <td class="r vb">${a.unique_callers.toLocaleString()}</td>
+      <td class="r vp">${fmtDur(a.talk_time_s)}</td>
+      <td style="min-width:70px;"><div class="bar-bg"><div class="bar-fill" style="width:${barW}%"></div></div></td>
+      <td class="r vm" style="white-space:nowrap;">${last}</td>
+    </tr>
+    <tr class="detail-row" id="${did}"><td colspan="9">${sub}</td></tr>`;
+  }).join('');
+
+  bodyEl.innerHTML = `<table>
+    <thead><tr>
+      <th></th><th>#</th><th>Agent (Dialpad)</th>
+      <th class="r">Answered</th><th class="r">Offered</th><th class="r">Unique callers</th>
+      <th class="r">Talk time</th><th>Volume</th><th class="r">Last call</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function buildEternaCallList(callsForUser, name) {
+  if (!callsForUser.length) {
+    return '<div class="detail-inner"><p style="color:var(--muted);font-size:12px;">No answered calls in this period.</p></div>';
+  }
+  const sorted = [...callsForUser].sort((a, b) => b.started_ms - a.started_ms);
+  const rows = sorted.map(c => {
+    const t    = c.started_ms ? new Date(c.started_ms) : null;
+    const time = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const date = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const rec  = c.answer_call_id
+      ? `<button class="rec-btn" style="cursor:pointer;" onclick="event.stopPropagation();resolveEternaRec(this,'${esc(c.answer_call_id)}')">▶ Recording</button>`
+      : '<span class="vm" style="font-size:11px;">—</span>';
+    return `<tr>
+      <td class="r" style="font-family:var(--font-mono);font-size:11px;">${date} ${time}</td>
+      <td style="font-family:var(--font-mono);font-size:11px;">${esc(fmtPhoneE164(c.caller))}</td>
+      <td class="r" style="font-family:var(--font-mono);font-size:11px;">${fmtDur(c.duration_s)}</td>
+      <td class="r">${rec}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="detail-inner">
+    <div class="detail-title">${sorted.length} answered call${sorted.length!==1?'s':''} — ${esc(name)}</div>
+    <table class="detail-table">
+      <thead><tr><th class="r">Time</th><th>Caller</th><th class="r">Duration</th><th class="r">Recording</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+// Lazily resolve a Dialpad recording URL (worker get_call + KV cache). The URL is
+// cookie-gated by Dialpad, so it opens in their web player — only plays if the
+// viewer is logged into Dialpad in this browser. Swaps the button for a real link
+// so a second click reliably opens it (an after-await window.open may be blocked).
+async function resolveEternaRec(el, callId) {
+  if (eternaRecCache[callId] !== undefined) {
+    const u = eternaRecCache[callId];
+    if (u) window.open(u, '_blank', 'noopener');
+    return;
+  }
+  el.textContent = '…'; el.disabled = true;
+  try {
+    const res  = await authedFetch(`/dialpad/recording?call_id=${encodeURIComponent(callId)}`);
+    const body = await res.json().catch(() => ({}));
+    const url  = body && body.url ? body.url : null;
+    eternaRecCache[callId] = url;
+    if (url) {
+      const a = document.createElement('a');
+      a.href = url; a.target = '_blank'; a.rel = 'noopener';
+      a.className = 'rec-btn'; a.textContent = '▶ Open ↗';
+      a.title = 'Opens in Dialpad — must be logged in to play';
+      el.replaceWith(a);
+      window.open(url, '_blank', 'noopener'); // best-effort immediate open
+    } else {
+      el.textContent = 'No recording'; el.disabled = true; el.classList.add('vm');
+    }
+  } catch (e) {
+    el.textContent = 'error'; el.disabled = false;
+  }
+}
+
 async function fetchTargetCaps() {
   try {
     let page = 1;
@@ -1370,6 +1513,12 @@ async function fetchData() {
     await loadOverridesFromServer();
     await fetchDialpadOutbound(start, end);
     processCalls(calls, start, end);
+    // Eterna ring-group attribution paginates Dialpad (slow, ~18s/day uncached) —
+    // load it OUT of the critical path so it never stalls the main render or the
+    // 30s refresh. Worker caches the result 120s, so most refreshes return fast.
+    const eb = document.getElementById('eternaBody');
+    if (eb) eb.innerHTML = '<p class="no-data" style="padding:16px;">Loading Eterna agents…</p>';
+    fetchEternaAgents(start, end).then(renderEternaPanel);
     dot.className='brand-dot live'; st.className='st live';
     st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
   } catch(e) {
