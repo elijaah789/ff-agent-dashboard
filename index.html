@@ -227,6 +227,19 @@
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
   </div>
 
+  <div class="spend-strip" id="aiHandoffStrip">
+    <div class="ss-head">
+      <span class="ss-title">AI agent handoff · 949 → Dialpad</span>
+      <span class="ss-note">callers that reached the 949 AI line but were never routed to a Dialpad agent · follows the date range</span>
+    </div>
+    <div class="spend-cards">
+      <div class="mc b"><div class="ml">Reached AI</div>        <div class="mv b" id="mReachedAI">—</div></div>
+      <div class="mc g"><div class="ml">Routed to Dialpad</div> <div class="mv g" id="mRouted">—</div></div>
+      <div class="mc r"><div class="ml">Lost at AI</div>        <div class="mv r" id="mLostAI">—</div></div>
+      <div class="mc a"><div class="ml">Handoff rate</div>      <div class="mv a" id="mHandoffRate">—</div></div>
+    </div>
+  </div>
+
   <div class="spend-strip" id="convStrip">
     <div class="ss-head">
       <span class="ss-title">Conversion — calls answered → sales closed</span>
@@ -302,6 +315,15 @@
       <span class="acp-hint">click row to expand · ▶ to play recording · ✓ = agent called this number back from Dialpad</span>
     </summary>
     <div id="allCallsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
+
+  <details id="aiDropPanel" class="all-calls-panel">
+    <summary>
+      <span class="acp-title">Lost at AI · no Dialpad handoff</span>
+      <span class="acp-count" id="aiDropCount">—</span>
+      <span class="acp-hint">949 AI calls with no matching Dialpad agent leg · "Hung up by" = caller (gave up on the AI) vs AI ended (no transfer) · ▶ to hear the AI call</span>
+    </summary>
+    <div id="aiDropBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
   </details>
 
   <details id="allOutboundPanel" class="all-calls-panel">
@@ -412,6 +434,8 @@ let dialpadOutbound = []; // raw outbound dials from /dialpad/calls?direction=ou
 let totCallbacks = 0;
 let eternaData      = null; // /dialpad/eterna-agents response (account 2 ring-group attribution)
 const eternaRecCache = {};  // call_id → resolved recording URL (null = none), lazy-filled on click
+let dialpadInbound  = []; // raw inbound legs from /dialpad/calls?direction=inbound (both accounts) — for 949 AI → Dialpad handoff match
+let aiDropCalls     = []; // 949 AI calls with no Dialpad handoff (per-call drilldown)
 
 // ─── Conversion tracker state (answered → closed) ──────────────────────────────
 // Set by the three async loaders (processCalls / fetchEternaAgents / renderDealsPanel)
@@ -829,6 +853,51 @@ function processCalls(calls, start, end) {
     if (c._callback) totCallbacks++;
   });
 
+  // ─── AI-agent handoff: 949 → Dialpad ────────────────────────────────────────
+  // Eterna calls route to the 949 AI voice agent (Retreaver target 133189), which
+  // qualifies the caller then transfers to a Dialpad agent. The original caller
+  // ANI is preserved end-to-end (verified: the 949 number never appears as a
+  // Dialpad caller), so a 949 call "reached Dialpad" iff an inbound Dialpad leg
+  // exists for the same number near the call. No match = lost at the AI.
+  // Greedy nearest-leg match consumes each Dialpad leg once so repeat callers
+  // are only credited as routed as many times as they actually hit Dialpad.
+  const AI_NUM = '9496667149';
+  const inboundByNum = new Map(); // normalized ANI -> [{t, used}]
+  dialpadInbound.forEach(o => {
+    const num = normalizePhone(o.external_number);
+    if (!num) return;
+    const t = Number(o.date_started || o.started_at_ms || 0);
+    if (!t) return;
+    if (!inboundByNum.has(num)) inboundByNum.set(num, []);
+    inboundByNum.get(num).push({ t, used:false });
+  });
+  inboundByNum.forEach(arr => arr.sort((a,b) => a.t - b.t));
+
+  let totReachedAI = 0, totRouted = 0;
+  aiDropCalls = [];
+  const aiCalls = calls
+    .filter(c => normalizePhone(c.dialed_number) === AI_NUM || String(c.system_target_id) === '133189')
+    .filter(c => c.connected === true)
+    .filter(c => c.end_time && !LIVE_S.has((c.status || '').toLowerCase())) // ended calls only — live ones can't be judged yet
+    .sort((a,b) => new Date(a.start_time) - new Date(b.start_time));
+  aiCalls.forEach(c => {
+    totReachedAI++;
+    const sMs = new Date(c.start_time).getTime();
+    const eMs = new Date(c.end_time).getTime();
+    const lo = sMs - 60000, hi = eMs + 180000; // transfer leg starts during the AI call, allow brief queue delay
+    const legs = inboundByNum.get(normalizePhone(c.caller)) || [];
+    let best = -1, bestDist = Infinity;
+    for (let i = 0; i < legs.length; i++) {
+      if (legs[i].used || legs[i].t < lo || legs[i].t > hi) continue;
+      const d = Math.abs(legs[i].t - eMs); // closest to the transfer moment (call end)
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    if (best >= 0) { legs[best].used = true; totRouted++; }
+    else aiDropCalls.push(c);
+  });
+  const totLostAI    = aiDropCalls.length;
+  const handoffRate  = totReachedAI ? Math.round(totRouted / totReachedAI * 100) : 0;
+
   // ─── Per-agent outbound attribution ────────────────────────────────────────
   // Each Dialpad outbound record carries the dialing agent. Field shape varies
   // by API version: try nested target.{id,name}, flat target_id/target_name,
@@ -862,6 +931,10 @@ function processCalls(calls, start, end) {
   document.getElementById('mCallbacks').textContent  = totCallbacks.toLocaleString();
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
+  document.getElementById('mReachedAI').textContent   = totReachedAI.toLocaleString();
+  document.getElementById('mRouted').textContent      = totRouted.toLocaleString();
+  document.getElementById('mLostAI').textContent      = totLostAI.toLocaleString();
+  document.getElementById('mHandoffRate').textContent = totReachedAI ? handoffRate + '%' : '—';
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
 
   // Feed the conversion tracker with the Retreaver answered total for this range.
@@ -870,6 +943,8 @@ function processCalls(calls, start, end) {
 
   document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
   document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
+  document.getElementById('aiDropCount').textContent   = totReachedAI ? `${totLostAI} of ${totReachedAI} lost` : '—';
+  document.getElementById('aiDropBody').innerHTML      = buildAiDropTable();
   document.getElementById('allOutboundCount').textContent = dialpadOutbound.length.toLocaleString();
   document.getElementById('allOutboundBody').innerHTML    = buildOutboundTable();
 
@@ -1173,6 +1248,49 @@ function buildAllCallsTable(calls) {
   </table>`;
 }
 
+// ─── Lost-at-AI panel ────────────────────────────────────────────────────────
+// 949 AI calls (ended) that never produced a matching Dialpad agent leg.
+// "Hung up by": caller = gave up on the AI; AI ended = AI hung up without transfer.
+function buildAiDropTable() {
+  if (!aiDropCalls || aiDropCalls.length === 0) {
+    return '<p class="no-data" style="padding:16px;">No lost calls — every ended 949 AI call in this range reached a Dialpad agent (or no 949 calls / no Dialpad data in range).</p>';
+  }
+  const sorted = [...aiDropCalls].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
+  const rows = sorted.map(c => {
+    const t   = c.start_time ? new Date(c.start_time) : null;
+    const tm  = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const dte = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const aiTalk = parseInt(c.dialed_call_duration || c.total_duration || 0, 10);
+    const who = c.hung_up_by === 'target'
+      ? '<span class="acp-pill missed">AI ended</span>'
+      : (c.hung_up_by === 'caller' ? '<span class="acp-pill short">Caller hung up</span>' : '<span class="vm" style="font-size:11px;">—</span>');
+    const rec = c.recording_url
+      ? `<a href="${esc(c.recording_url)}" target="_blank" rel="noopener" class="rec-btn">▶ Play</a>`
+      : '<span class="vm" style="font-size:11px;">—</span>';
+    return `<tr>
+      <td class="r" style="white-space:nowrap;">${dte} ${tm}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;">${esc(fmtPhoneE164(c.caller))}</td>
+      <td>${esc(c.caller_city || '—')}, ${esc(c.caller_state || '—')}</td>
+      <td class="r">${fmtDur(aiTalk)}</td>
+      <td>${who}</td>
+      <td class="r">${rec}</td>
+    </tr>`;
+  }).join('');
+  return `<table>
+    <thead>
+      <tr>
+        <th class="r">Time</th>
+        <th>Caller</th>
+        <th>Location</th>
+        <th class="r">AI talk time</th>
+        <th>Hung up by</th>
+        <th class="r">Recording</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 function buildOutboundTable() {
   if (!dialpadOutbound || dialpadOutbound.length === 0) {
     return '<p class="no-data" style="padding:16px;">No outbound calls in this period.</p>';
@@ -1412,6 +1530,23 @@ async function fetchDialpadOutbound(start, end) {
     dialpadOutbound = Array.isArray(body?.calls) ? body.calls : [];
   } catch (e) {
     console.warn('fetchDialpadOutbound failed:', e.message);
+  }
+}
+
+// ─── Dialpad inbound: did the 949 AI caller actually reach a Dialpad agent? ──
+// Pulls every inbound Dialpad leg in range (worker merges both Dialpad accounts).
+// The 949 AI agent preserves the original caller ANI on transfer, so a 949 call
+// "reached Dialpad" iff an inbound leg exists for the same number near the call.
+// Degrades silently — if the route fails, the AI-handoff cards/panel stay empty.
+async function fetchDialpadInbound(start, end) {
+  dialpadInbound = [];
+  try {
+    const res = await authedFetch(`/dialpad/calls?start=${start}&end=${end}&direction=inbound`);
+    if (!res.ok) { console.warn(`fetchDialpadInbound: HTTP ${res.status}`); return; }
+    const body = await res.json();
+    dialpadInbound = Array.isArray(body?.calls) ? body.calls : [];
+  } catch (e) {
+    console.warn('fetchDialpadInbound failed:', e.message);
   }
 }
 
@@ -1943,6 +2078,7 @@ async function fetchData() {
     await fetchTargetCaps();
     await loadOverridesFromServer();
     await fetchDialpadOutbound(start, end);
+    await fetchDialpadInbound(start, end);
     processCalls(calls, start, end);
     // Eterna ring-group attribution paginates Dialpad (slow, ~18s/day uncached) —
     // load it OUT of the critical path so it never stalls the main render or the
