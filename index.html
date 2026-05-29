@@ -51,6 +51,9 @@
   .spend-cards .mc { padding:14px 16px; }
   .ss-sub { font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-top:6px; }
   .ss-sub span { color:var(--text); }
+  #dealsPanel tfoot .deals-total td { font-family:var(--font-mono); font-size:13px; font-weight:700; color:var(--text); border-top:2px solid var(--border); padding:10px 14px; }
+  #dealsPanel tfoot .deals-total td.r { text-align:right; color:var(--accent); }
+  #dealsPanel .detail-title { padding:0 0 8px; }
 
   .live-banner { display:none; align-items:center; gap:10px; background:rgba(96,165,250,0.06); border:1px solid rgba(96,165,250,0.2); border-radius:8px; padding:10px 16px; margin-bottom:16px; font-family:var(--font-mono); font-size:12px; color:var(--blue); }
   .live-banner .pdot { width:7px; height:7px; border-radius:50%; background:var(--blue); animation:breathe 1s ease-in-out infinite; flex-shrink:0; }
@@ -238,6 +241,15 @@
       </div>
     </div>
   </div>
+
+  <details id="dealsPanel" class="all-calls-panel" open>
+    <summary>
+      <span class="acp-title">Closed deals · Eterna Spark</span>
+      <span class="acp-count" id="dealsCount">—</span>
+      <span class="acp-hint">target premium by closing agent · click an agent to see their deals · follows the date range above</span>
+    </summary>
+    <div id="dealsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
 
   <details id="allCallsPanel" class="all-calls-panel" open>
     <summary>
@@ -1565,6 +1577,83 @@ async function loadAdSpend() {
   }
 }
 
+// ─── GHL Eterna Spark closed deals ────────────────────────────────────────────
+// Pull closed deals (Target Premium + closing agent) for the SAME date range the
+// call panels use, group by agent, render a per-agent rollup with expandable deal
+// lists + grand totals. Runs out of the critical path; worker KV-caches 5 min.
+async function loadGhlDeals(start, end) {
+  const body = document.getElementById('dealsBody');
+  const countEl = document.getElementById('dealsCount');
+  if (!body) return;
+  try {
+    const res = await authedFetch(`/ghl/deals?start=${start}&end=${end}`);
+    if (!res.ok) {
+      body.innerHTML = `<p class="no-data" style="padding:16px;">Deals unavailable (HTTP ${res.status}).</p>`;
+      if (countEl) countEl.textContent = '—';
+      return;
+    }
+    const data = await res.json();
+    renderDealsPanel(data.deals || []);
+  } catch (e) {
+    body.innerHTML = `<p class="no-data" style="padding:16px;">Could not load deals: ${esc(e.message)}</p>`;
+    if (countEl) countEl.textContent = '—';
+    console.warn('loadGhlDeals failed:', e.message);
+  }
+}
+
+function renderDealsPanel(deals) {
+  const body = document.getElementById('dealsBody');
+  const countEl = document.getElementById('dealsCount');
+  const totalPremium = deals.reduce((s, d) => s + (Number(d.premium) || 0), 0);
+  if (countEl) countEl.textContent = `${deals.length} sale${deals.length === 1 ? '' : 's'} · ${fmtUSD(totalPremium)}`;
+
+  if (!deals.length) {
+    body.innerHTML = `<p class="no-data" style="padding:24px;">No closed deals in this range.</p>`;
+    return;
+  }
+
+  const byAgent = {};
+  deals.forEach(d => {
+    const k = d.agent || 'Unassigned';
+    (byAgent[k] = byAgent[k] || { count: 0, premium: 0, deals: [] });
+    byAgent[k].count++;
+    byAgent[k].premium += Number(d.premium) || 0;
+    byAgent[k].deals.push(d);
+  });
+  const agents = Object.keys(byAgent).sort((a, b) => byAgent[b].premium - byAgent[a].premium);
+
+  let rows = '';
+  agents.forEach((name, i) => {
+    const g = byAgent[name];
+    const did = `deal-agent-${i}`, iid = `deal-icon-${i}`;
+    const sub = g.deals
+      .sort((a, b) => (b.premium || 0) - (a.premium || 0))
+      .map(d => `<tr><td>${esc(d.name)}</td><td class="r">${esc(d.soldDate || '—')}</td><td class="r">${fmtUSD(d.premium)}</td></tr>`)
+      .join('');
+    rows += `<tr class="agent-row" onclick="toggleDetail('${did}','${iid}')">
+      <td style="width:20px;"><span class="expand-icon" id="${iid}">▶</span></td>
+      <td><div class="aname">${esc(name)}</div></td>
+      <td class="r vm">${g.count}</td>
+      <td class="r vg">${fmtUSD(g.premium)}</td>
+    </tr>
+    <tr class="detail-row" id="${did}"><td colspan="4">
+      <div style="padding:10px 14px;">
+        <div class="detail-title">${esc(name)} · ${g.count} deal${g.count === 1 ? '' : 's'}</div>
+        <table class="detail-table">
+          <thead><tr><th>Contact</th><th class="r">Sold date</th><th class="r">Target premium</th></tr></thead>
+          <tbody>${sub}</tbody>
+        </table>
+      </div>
+    </td></tr>`;
+  });
+
+  body.innerHTML = `<table>
+    <thead><tr><th style="width:20px;"></th><th>Closing agent</th><th class="r">Sales</th><th class="r">Target premium</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr class="deals-total"><td></td><td>TOTAL</td><td class="r">${deals.length}</td><td class="r">${fmtUSD(totalPremium)}</td></tr></tfoot>
+  </table>`;
+}
+
 async function fetchData() {
   if (!WORKER_URL || !SHARED_TOKEN) {
     showSetupBanner();
@@ -1599,6 +1688,7 @@ async function fetchData() {
     if (eb) eb.innerHTML = '<p class="no-data" style="padding:16px;">Loading Eterna agents…</p>';
     fetchEternaAgents(start, end).then(renderEternaPanel);
     loadAdSpend();  // account spend — out of critical path; worker KV-caches 15 min
+    loadGhlDeals(start, end);  // Eterna Spark closed deals for the selected range
     dot.className='brand-dot live'; st.className='st live';
     st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
   } catch(e) {
