@@ -317,6 +317,15 @@
     <div id="allCallsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
   </details>
 
+  <details id="aiRoutedPanel" class="all-calls-panel">
+    <summary>
+      <span class="acp-title">Routed to agent · AI handoff succeeded</span>
+      <span class="acp-count" id="aiRoutedCount">—</span>
+      <span class="acp-hint">949 AI calls that reached a Dialpad agent · ▶ to hear the call (caller + AI through transfer) · agent-side recordings live in the Eterna Agents panel below</span>
+    </summary>
+    <div id="aiRoutedBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
+
   <details id="aiDropPanel" class="all-calls-panel">
     <summary>
       <span class="acp-title">Lost at AI · no Dialpad handoff</span>
@@ -436,6 +445,7 @@ let eternaData      = null; // /dialpad/eterna-agents response (account 2 ring-g
 const eternaRecCache = {};  // call_id → resolved recording URL (null = none), lazy-filled on click
 let dialpadInbound  = []; // raw inbound legs from /dialpad/calls?direction=inbound (both accounts) — for 949 AI → Dialpad handoff match
 let aiDropCalls     = []; // 949 AI calls with no Dialpad handoff (per-call drilldown)
+let aiRoutedCalls   = []; // 949 AI calls successfully routed to a Dialpad agent (per-call drilldown)
 
 // ─── Conversion tracker state (answered → closed) ──────────────────────────────
 // Set by the three async loaders (processCalls / fetchEternaAgents / renderDealsPanel)
@@ -875,6 +885,7 @@ function processCalls(calls, start, end) {
 
   let totReachedAI = 0, totRouted = 0;
   aiDropCalls = [];
+  aiRoutedCalls = [];
   const aiCalls = calls
     .filter(c => normalizePhone(c.dialed_number) === AI_NUM || String(c.system_target_id) === '133189')
     .filter(c => c.connected === true)
@@ -892,7 +903,7 @@ function processCalls(calls, start, end) {
       const d = Math.abs(legs[i].t - eMs); // closest to the transfer moment (call end)
       if (d < bestDist) { bestDist = d; best = i; }
     }
-    if (best >= 0) { legs[best].used = true; totRouted++; }
+    if (best >= 0) { legs[best].used = true; totRouted++; c._routedAtMs = legs[best].t; aiRoutedCalls.push(c); }
     else aiDropCalls.push(c);
   });
   const totLostAI    = aiDropCalls.length;
@@ -943,6 +954,8 @@ function processCalls(calls, start, end) {
 
   document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
   document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
+  document.getElementById('aiRoutedCount').textContent = totReachedAI ? `${totRouted} of ${totReachedAI} routed` : '—';
+  document.getElementById('aiRoutedBody').innerHTML    = buildAiRoutedTable();
   document.getElementById('aiDropCount').textContent   = totReachedAI ? `${totLostAI} of ${totReachedAI} lost` : '—';
   document.getElementById('aiDropBody').innerHTML      = buildAiDropTable();
   document.getElementById('allOutboundCount').textContent = dialpadOutbound.length.toLocaleString();
@@ -1284,6 +1297,48 @@ function buildAiDropTable() {
         <th>Location</th>
         <th class="r">AI talk time</th>
         <th>Hung up by</th>
+        <th class="r">Recording</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ─── Routed-to-agent panel ──────────────────────────────────────────────────
+// 949 AI calls that successfully reached a Dialpad agent (matched an inbound
+// Dialpad leg). Recording is the Retreaver leg (caller + AI through transfer);
+// the agent-side recording is in the Eterna Agents panel.
+function buildAiRoutedTable() {
+  if (!aiRoutedCalls || aiRoutedCalls.length === 0) {
+    return '<p class="no-data" style="padding:16px;">No routed calls — no 949 AI call in this range matched a Dialpad agent leg (or no 949 calls / no Dialpad data in range).</p>';
+  }
+  const sorted = [...aiRoutedCalls].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
+  const rows = sorted.map(c => {
+    const t   = c.start_time ? new Date(c.start_time) : null;
+    const tm  = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const dte = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const aiTalk = parseInt(c.dialed_call_duration || 0, 10);
+    const total  = parseInt(c.total_duration || 0, 10);
+    const rec = c.recording_url
+      ? `<a href="${esc(c.recording_url)}" target="_blank" rel="noopener" class="rec-btn">▶ Play</a>`
+      : '<span class="vm" style="font-size:11px;">—</span>';
+    return `<tr>
+      <td class="r" style="white-space:nowrap;">${dte} ${tm}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;">${esc(fmtPhoneE164(c.caller))}</td>
+      <td>${esc(c.caller_city || '—')}, ${esc(c.caller_state || '—')}</td>
+      <td class="r">${fmtDur(aiTalk)}</td>
+      <td class="r">${fmtDur(total)}</td>
+      <td class="r">${rec}</td>
+    </tr>`;
+  }).join('');
+  return `<table>
+    <thead>
+      <tr>
+        <th class="r">Time</th>
+        <th>Caller</th>
+        <th>Location</th>
+        <th class="r">AI talk time</th>
+        <th class="r">Call length</th>
         <th class="r">Recording</th>
       </tr>
     </thead>
