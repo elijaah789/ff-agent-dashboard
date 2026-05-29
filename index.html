@@ -227,6 +227,29 @@
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
   </div>
 
+  <div class="spend-strip" id="convStrip">
+    <div class="ss-head">
+      <span class="ss-title">Conversion — calls answered → sales closed</span>
+      <span class="ss-note">Eterna Spark closed deals · follows the date range</span>
+    </div>
+    <div class="spend-cards">
+      <div class="mc g">
+        <div class="ml">Sales closed</div>
+        <div class="mv g" id="mConvClosed">—</div>
+      </div>
+      <div class="mc a">
+        <div class="ml">Close rate · Retreaver</div>
+        <div class="mv a" id="mConvRetr">—</div>
+        <div class="ss-sub"><span id="mConvRetrSub">loading…</span></div>
+      </div>
+      <div class="mc a">
+        <div class="ml">Close rate · Eterna line</div>
+        <div class="mv a" id="mConvEterna">—</div>
+        <div class="ss-sub"><span id="mConvEternaSub">loading…</span></div>
+      </div>
+    </div>
+  </div>
+
   <div class="spend-strip" id="spendStrip">
     <div class="ss-head">
       <span class="ss-title">Google Ads spend — account total</span>
@@ -261,6 +284,15 @@
       <span class="acp-hint">target premium by closing agent · click an agent to see their deals · follows the date range above</span>
     </summary>
     <div id="dealsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
+
+  <details id="convByAgentPanel" class="all-calls-panel" open>
+    <summary>
+      <span class="acp-title">Conversion by agent · answered → closed</span>
+      <span class="acp-count" id="convByAgentCount">—</span>
+      <span class="acp-hint">close rate = closed ÷ answered · two answered sources (Retreaver inbound + Eterna line) · agent names fuzzy-matched across systems</span>
+    </summary>
+    <div id="convByAgentBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
   </details>
 
   <details id="allCallsPanel" class="all-calls-panel" open>
@@ -380,6 +412,15 @@ let dialpadOutbound = []; // raw outbound dials from /dialpad/calls?direction=ou
 let totCallbacks = 0;
 let eternaData      = null; // /dialpad/eterna-agents response (account 2 ring-group attribution)
 const eternaRecCache = {};  // call_id → resolved recording URL (null = none), lazy-filled on click
+
+// ─── Conversion tracker state (answered → closed) ──────────────────────────────
+// Set by the three async loaders (processCalls / fetchEternaAgents / renderDealsPanel)
+// and read by renderConversion(). null = source not loaded yet (renders as "…").
+let convClosed         = null; // deals.length — Eterna Spark closed deals
+let convRetrAnswered   = null; // totAnswered — Retreaver inbound answered
+let convEternaAnswered = null; // /dialpad/eterna-agents answered_calls (ring-group line)
+let convEternaAgents   = [];   // eterna agents[] {name, answered}
+let convDealsByAgent   = {};   // {agentName: {count, premium}} closing-agent rollup
 
 const phoneToTarget = {};
 const targetCaps    = {};
@@ -822,6 +863,10 @@ function processCalls(calls, start, end) {
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+
+  // Feed the conversion tracker with the Retreaver answered total for this range.
+  convRetrAnswered = totAnswered;
+  renderConversion();
 
   document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
   document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
@@ -1673,6 +1718,18 @@ function renderDealsPanel(deals) {
   const totalPremium = deals.reduce((s, d) => s + (Number(d.premium) || 0), 0);
   if (countEl) countEl.textContent = `${deals.length} sale${deals.length === 1 ? '' : 's'} · ${fmtUSD(totalPremium)}`;
 
+  // Feed the conversion tracker (closed count + per-closing-agent rollup) before
+  // the empty-range early return, so the tracker updates in both cases.
+  convClosed = deals.length;
+  convDealsByAgent = {};
+  deals.forEach(d => {
+    const k = d.agent || 'Unassigned';
+    (convDealsByAgent[k] = convDealsByAgent[k] || { count: 0, premium: 0 });
+    convDealsByAgent[k].count++;
+    convDealsByAgent[k].premium += Number(d.premium) || 0;
+  });
+  renderConversion();
+
   if (!deals.length) {
     body.innerHTML = `<p class="no-data" style="padding:24px;">No closed deals in this range.</p>`;
     return;
@@ -1720,6 +1777,140 @@ function renderDealsPanel(deals) {
   </table>`;
 }
 
+// ─── Conversion tracker (calls answered → sales closed) ────────────────────────
+// Pairs Eterna Spark closed deals against calls ANSWERED for the selected range.
+// Owner's choice: show BOTH answered sources side by side — Retreaver inbound
+// (totAnswered) and the Eterna ring-group line (/dialpad/eterna-agents). Driven by
+// module state set by the three async loaders, so this is idempotent and renders
+// whatever has loaded so far ("…" = still loading, "—" = no denominator).
+
+// Reused for the cross-system closing-agent join. Same comparison the Dialpad↔
+// Retreaver outbound attribution uses inline above (lowercase, name-part substring).
+function fuzzyNameMatch(n1, n2) {
+  const a = (n1 || '').toLowerCase().trim(), b = (n2 || '').toLowerCase().trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ap = a.split(' ').filter(p => p.length > 2);
+  const bp = b.split(' ').filter(p => p.length > 2);
+  return ap.some(p => b.includes(p)) || bp.some(p => a.includes(p));
+}
+
+// close-rate (percent) → color. Life-insurance phone close rates run low; tune freely.
+function convMvClass(r) { return r >= 10 ? 'g' : r >= 5 ? 'a' : 'r'; } // for .mv strip values
+function convVClass(r)  { return r >= 10 ? 'vg' : r >= 5 ? 'va' : 'vr'; } // for table cells
+function convFmtRate(closed, answered) {
+  if (answered == null) return '…';     // source not loaded yet
+  if (!answered)        return '—';     // no denominator
+  return (closed / answered * 100).toFixed(1) + '%';
+}
+
+function renderConversion() {
+  const closed = convClosed == null ? 0 : convClosed;
+  const closedPending = convClosed == null;
+
+  // ── Top strip ──
+  const closedEl = document.getElementById('mConvClosed');
+  if (closedEl) closedEl.textContent = closedPending ? '…' : closed.toLocaleString();
+
+  const rRetr   = convRetrAnswered   ? (closed / convRetrAnswered   * 100) : null;
+  const rEterna = convEternaAnswered ? (closed / convEternaAnswered * 100) : null;
+
+  const retrEl = document.getElementById('mConvRetr');
+  if (retrEl) {
+    retrEl.textContent = convFmtRate(closed, convRetrAnswered);
+    retrEl.className = 'mv ' + (rRetr == null ? '' : convMvClass(rRetr));
+  }
+  const retrSub = document.getElementById('mConvRetrSub');
+  if (retrSub) retrSub.textContent = convRetrAnswered == null ? 'loading…'
+    : `${closedPending ? '…' : closed} / ${convRetrAnswered.toLocaleString()} answered`;
+
+  const etEl = document.getElementById('mConvEterna');
+  if (etEl) {
+    etEl.textContent = convFmtRate(closed, convEternaAnswered);
+    etEl.className = 'mv ' + (rEterna == null ? '' : convMvClass(rEterna));
+  }
+  const etSub = document.getElementById('mConvEternaSub');
+  if (etSub) etSub.textContent = convEternaAnswered == null ? 'loading…'
+    : `${closedPending ? '…' : closed} / ${convEternaAnswered.toLocaleString()} answered`;
+
+  renderConversionByAgent();
+}
+
+function renderConversionByAgent() {
+  const body = document.getElementById('convByAgentBody');
+  const countEl = document.getElementById('convByAgentCount');
+  if (!body) return;
+
+  // Fuzzy-merge the three name spaces (Retreaver answered, Eterna answered,
+  // GHL closing agents) into canonical buckets.
+  const buckets = [];
+  function bucketFor(name) {
+    let b = buckets.find(x => fuzzyNameMatch(x.label, name));
+    if (!b) { b = { label: name, retr: 0, eterna: 0, closed: 0 }; buckets.push(b); }
+    return b;
+  }
+  (allAgents || []).forEach(a => { if (a && a.name) bucketFor(a.name).retr += (a.answered || 0); });
+  (convEternaAgents || []).forEach(a => { if (a && a.name) bucketFor(a.name).eterna += (a.answered || 0); });
+  Object.keys(convDealsByAgent || {}).forEach(name => {
+    const b = bucketFor(name);
+    b.closed += convDealsByAgent[name].count || 0;
+    b.label = name; // GHL closing-agent name is the most meaningful display label
+  });
+
+  if (!buckets.length) {
+    body.innerHTML = `<p class="no-data" style="padding:24px;">No conversion data in this range.</p>`;
+    if (countEl) countEl.textContent = '—';
+    return;
+  }
+
+  // Most closed first, then best Retreaver close rate.
+  buckets.sort((x, y) => (y.closed - x.closed) || ((y.closed / (y.retr || 1)) - (x.closed / (x.retr || 1))));
+
+  const rateCell = (closed, answered) => {
+    if (!answered) return '<span class="vm">—</span>';
+    const r = closed / answered * 100;
+    return `<span class="${convVClass(r)}">${r.toFixed(1)}%</span>`;
+  };
+
+  let rows = '';
+  buckets.forEach(b => {
+    rows += `<tr>
+      <td>${esc(b.label)}</td>
+      <td class="r">${b.retr.toLocaleString()}</td>
+      <td class="r">${b.eterna.toLocaleString()}</td>
+      <td class="r vg">${b.closed.toLocaleString()}</td>
+      <td class="r">${rateCell(b.closed, b.retr)}</td>
+      <td class="r">${rateCell(b.closed, b.eterna)}</td>
+    </tr>`;
+  });
+
+  const totRetr   = buckets.reduce((s, b) => s + b.retr, 0);
+  const totEterna = buckets.reduce((s, b) => s + b.eterna, 0);
+  const totClosed = buckets.reduce((s, b) => s + b.closed, 0);
+  const totCell = (closed, answered) => answered ? `${(closed / answered * 100).toFixed(1)}%` : '—';
+
+  if (countEl) countEl.textContent = `${buckets.length} agent${buckets.length === 1 ? '' : 's'}`;
+  body.innerHTML = `<table>
+    <thead><tr>
+      <th>Agent</th>
+      <th class="r">Retreaver answered</th>
+      <th class="r">Eterna answered</th>
+      <th class="r">Closed</th>
+      <th class="r">Rate · Retr</th>
+      <th class="r">Rate · Eterna</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr class="deals-total">
+      <td>TOTAL</td>
+      <td class="r">${totRetr.toLocaleString()}</td>
+      <td class="r">${totEterna.toLocaleString()}</td>
+      <td class="r">${totClosed.toLocaleString()}</td>
+      <td class="r">${totCell(totClosed, totRetr)}</td>
+      <td class="r">${totCell(totClosed, totEterna)}</td>
+    </tr></tfoot>
+  </table>`;
+}
+
 async function fetchData() {
   if (!WORKER_URL || !SHARED_TOKEN) {
     showSetupBanner();
@@ -1743,6 +1934,10 @@ async function fetchData() {
 
   let isHistorical = false;
   try {
+    // Reset conversion-tracker state so a new range never shows stale closed/eterna
+    // numbers while the async loaders refill them.
+    convClosed = null; convRetrAnswered = null; convEternaAnswered = null;
+    convEternaAgents = []; convDealsByAgent = {};
     const { calls, start, end } = await fetchAllPages();
     isHistorical = end < todayYMD();   // whole range is in the past → data is static
     await fetchTargetCaps();
@@ -1754,7 +1949,12 @@ async function fetchData() {
     // 30s refresh. Worker caches the result 120s, so most refreshes return fast.
     const eb = document.getElementById('eternaBody');
     if (eb) eb.innerHTML = '<p class="no-data" style="padding:16px;">Loading Eterna agents…</p>';
-    fetchEternaAgents(start, end).then(renderEternaPanel);
+    fetchEternaAgents(start, end).then(d => {
+      convEternaAnswered = (d && d.answered_calls) || 0;
+      convEternaAgents   = (d && d.agents) || [];
+      renderEternaPanel(d);
+      renderConversion();
+    });
     loadAdSpend(start, end);  // account spend — out of critical path; worker KV-caches 15 min
     loadGhlDeals(start, end);  // Eterna Spark closed deals for the selected range
     if (isHistorical) {
