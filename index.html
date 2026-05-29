@@ -43,6 +43,14 @@
   .ml { font-family:var(--font-mono); font-size:10px; color:var(--muted); letter-spacing:0.09em; text-transform:uppercase; margin-bottom:8px; }
   .mv { font-size:26px; font-weight:700; line-height:1; color:var(--text); }
   .mv.g { color:var(--accent); } .mv.r { color:var(--red); } .mv.a { color:var(--amber); } .mv.b { color:var(--blue); } .mv.p { color:var(--purple); }
+  .spend-strip { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 18px; margin-bottom:24px; }
+  .spend-strip .ss-head { display:flex; align-items:baseline; gap:10px; margin-bottom:12px; }
+  .spend-strip .ss-title { font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text); }
+  .spend-strip .ss-note { font-family:var(--font-mono); font-size:10px; color:var(--muted); margin-left:auto; }
+  .spend-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .spend-cards .mc { padding:14px 16px; }
+  .ss-sub { font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-top:6px; }
+  .ss-sub span { color:var(--text); }
 
   .live-banner { display:none; align-items:center; gap:10px; background:rgba(96,165,250,0.06); border:1px solid rgba(96,165,250,0.2); border-radius:8px; padding:10px 16px; margin-bottom:16px; font-family:var(--font-mono); font-size:12px; color:var(--blue); }
   .live-banner .pdot { width:7px; height:7px; border-radius:50%; background:var(--blue); animation:breathe 1s ease-in-out infinite; flex-shrink:0; }
@@ -206,6 +214,29 @@
     <div class="mc g"><div class="ml">Callbacks</div>     <div class="mv g" id="mCallbacks">—</div></div>
     <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
+  </div>
+
+  <div class="spend-strip" id="spendStrip">
+    <div class="ss-head">
+      <span class="ss-title">Google Ads spend — account total</span>
+      <span class="ss-note">updates ~15 min</span>
+    </div>
+    <div class="spend-cards">
+      <div class="mc b">
+        <div class="ml">Today</div>
+        <div class="mv b" id="mSpendToday">—</div>
+      </div>
+      <div class="mc">
+        <div class="ml">Week · 7-day</div>
+        <div class="mv" id="mSpendWk7">—</div>
+        <div class="ss-sub">calendar wk <span id="mSpendWkCal">—</span></div>
+      </div>
+      <div class="mc">
+        <div class="ml">Month · 30-day</div>
+        <div class="mv" id="mSpendMo30">—</div>
+        <div class="ss-sub">month-to-date <span id="mSpendMoMTD">—</span></div>
+      </div>
+    </div>
   </div>
 
   <details id="allCallsPanel" class="all-calls-panel" open>
@@ -1486,6 +1517,54 @@ async function unpauseAll() {
   setTimeout(() => { btn.textContent = 'Unpause all'; btn.disabled = false; }, 5000);
 }
 
+// ─── Google Ads spend ─────────────────────────────────────────────────────────
+// Pull account-total daily spend for a trailing ~31-day window from the worker,
+// then bucket into today / week / month (both trailing window and calendar
+// period). Runs OUT of the critical path so Google Ads API latency never stalls
+// the call render; the worker KV-caches the response 15 min. Dates are computed
+// in browser-local time to match every other panel and the user's actual day.
+function fmtUSD(n) {
+  return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+async function loadAdSpend() {
+  const pad = n => String(n).padStart(2, '0');
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const ids = ['mSpendToday','mSpendWk7','mSpendWkCal','mSpendMo30','mSpendMoMTD'];
+  const setAll = v => ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = v; });
+
+  const now = new Date();
+  const end = fmt(now);
+  const startD = new Date(now); startD.setDate(startD.getDate() - 30);
+  const start = fmt(startD);
+
+  try {
+    const res = await authedFetch(`/google-ads/spend?start=${start}&end=${end}`);
+    if (!res.ok) { setAll('—'); console.warn('ad-spend HTTP', res.status); return; }
+    const data = await res.json();
+    const byDay = {};
+    (data.rows || []).forEach(r => { if (r && r.date) byDay[r.date] = (byDay[r.date] || 0) + (Number(r.cost) || 0); });
+
+    const todayStr = end;
+    const d6  = new Date(now); d6.setDate(d6.getDate() - 6);        // trailing 7 incl today
+    const sun = new Date(now); sun.setDate(sun.getDate() - sun.getDay()); // calendar week start (Sun)
+    const d29 = new Date(now); d29.setDate(d29.getDate() - 29);     // trailing 30 incl today
+    const moStart = `${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;   // calendar month start
+
+    const sumBetween = (lo, hi) => Object.keys(byDay)
+      .filter(d => d >= lo && d <= hi)
+      .reduce((s, d) => s + byDay[d], 0);
+
+    document.getElementById('mSpendToday').textContent = fmtUSD(byDay[todayStr] || 0);
+    document.getElementById('mSpendWk7').textContent   = fmtUSD(sumBetween(fmt(d6), todayStr));
+    document.getElementById('mSpendWkCal').textContent = fmtUSD(sumBetween(fmt(sun), todayStr));
+    document.getElementById('mSpendMo30').textContent  = fmtUSD(sumBetween(fmt(d29), todayStr));
+    document.getElementById('mSpendMoMTD').textContent = fmtUSD(sumBetween(moStart, todayStr));
+  } catch (e) {
+    setAll('—');
+    console.warn('loadAdSpend failed:', e.message);
+  }
+}
+
 async function fetchData() {
   if (!WORKER_URL || !SHARED_TOKEN) {
     showSetupBanner();
@@ -1519,6 +1598,7 @@ async function fetchData() {
     const eb = document.getElementById('eternaBody');
     if (eb) eb.innerHTML = '<p class="no-data" style="padding:16px;">Loading Eterna agents…</p>';
     fetchEternaAgents(start, end).then(renderEternaPanel);
+    loadAdSpend();  // account spend — out of critical path; worker KV-caches 15 min
     dot.className='brand-dot live'; st.className='st live';
     st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
   } catch(e) {
