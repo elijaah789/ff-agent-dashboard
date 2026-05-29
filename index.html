@@ -26,6 +26,9 @@
   .st { font-family:var(--font-mono); font-size:11px; color:var(--muted); }
   .st.live { color:var(--accent); } .st.err { color:var(--red); }
   select { background:var(--surface2); border:1px solid var(--border2); color:var(--text); font-family:var(--font-head); font-size:12px; padding:6px 10px; border-radius:6px; cursor:pointer; outline:none; }
+  input[type=date].dateInput { background:var(--surface2); border:1px solid var(--border2); color:var(--text); font-family:var(--font-mono); font-size:12px; padding:5px 8px; border-radius:6px; cursor:pointer; outline:none; }
+  input[type=date].dateInput:hover { border-color:var(--accent); }
+  input[type=date].dateInput::-webkit-calendar-picker-indicator { filter:invert(0.7); cursor:pointer; }
   .btn { background:transparent; border:1px solid var(--border2); color:var(--muted); font-family:var(--font-head); font-size:12px; padding:6px 14px; border-radius:6px; cursor:pointer; transition:all 0.15s; white-space:nowrap; }
   .btn:hover { border-color:var(--accent); color:var(--accent); }
   .chip { font-family:var(--font-mono); font-size:11px; color:var(--muted); white-space:nowrap; }
@@ -177,12 +180,16 @@
   </div>
   <div class="topbar-right">
     <span class="st" id="statusText">Connecting...</span>
-    <select id="rangeSelect" onchange="fetchData()">
+    <select id="rangeSelect" onchange="onPreset()">
       <option value="today">Today</option>
       <option value="yesterday">Yesterday</option>
       <option value="7days">Last 7 days</option>
       <option value="30days">Last 30 days</option>
+      <option value="custom">Custom</option>
     </select>
+    <input type="date" id="startDate" class="dateInput" onchange="onCustomDate()">
+    <span class="chip">to</span>
+    <input type="date" id="endDate" class="dateInput" onchange="onCustomDate()">
     <button class="btn" onclick="fetchData()">Refresh now</button>
     <button class="btn" id="testBtn" onclick="testRetreaverPause()" style="border-color:var(--amber);color:var(--amber);">Pause unavailable now</button>
     <button class="btn" id="unpauseBtn" onclick="unpauseAll()" style="border-color:var(--accent);color:var(--accent);">Unpause all</button>
@@ -238,6 +245,10 @@
         <div class="ml">Month · 30-day</div>
         <div class="mv" id="mSpendMo30">—</div>
         <div class="ss-sub">month-to-date <span id="mSpendMoMTD">—</span></div>
+      </div>
+      <div class="mc a">
+        <div class="ml">Selected range</div>
+        <div class="mv a" id="mSpendRange">—</div>
       </div>
     </div>
   </div>
@@ -423,15 +434,47 @@ function showSetupBanner() {
 }
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
+function todayYMD() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+}
+// Resolve the active selection (preset or custom) into {start,end} YYYY-MM-DD and
+// mirror the result back into the two date inputs so they always show the live
+// range. 'custom' reads the inputs and normalises them: swap if reversed, a blank
+// field collapses to a single day, both blank falls back to today.
 function getRange(val) {
   const now = new Date();
   const pad = n => String(n).padStart(2,'0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  if (val === 'today')     return { start:fmt(now), end:fmt(now) };
-  if (val === 'yesterday') { const y=new Date(now); y.setDate(y.getDate()-1); return {start:fmt(y),end:fmt(y)}; }
-  if (val === '7days')     { const s=new Date(now); s.setDate(s.getDate()-6); return {start:fmt(s),end:fmt(now)}; }
-  if (val === '30days')    { const s=new Date(now); s.setDate(s.getDate()-29); return {start:fmt(s),end:fmt(now)}; }
-  return { start:fmt(now), end:fmt(now) };
+  let start, end;
+  if (val === 'today')          { start = fmt(now); end = fmt(now); }
+  else if (val === 'yesterday') { const y=new Date(now); y.setDate(y.getDate()-1); start=fmt(y); end=fmt(y); }
+  else if (val === '7days')     { const s=new Date(now); s.setDate(s.getDate()-6);  start=fmt(s); end=fmt(now); }
+  else if (val === '30days')    { const s=new Date(now); s.setDate(s.getDate()-29); start=fmt(s); end=fmt(now); }
+  else if (val === 'custom') {
+    start = document.getElementById('startDate').value;
+    end   = document.getElementById('endDate').value;
+    if (!start && !end) { start = fmt(now); end = fmt(now); }
+    else if (!start)    { start = end; }
+    else if (!end)      { end = start; }
+    if (end < start)    { const t = start; start = end; end = t; }
+  } else { start = fmt(now); end = fmt(now); }
+  const si = document.getElementById('startDate'), ei = document.getElementById('endDate');
+  if (si) si.value = start;
+  if (ei) ei.value = end;
+  return { start, end };
+}
+// Preset dropdown → fill the date inputs from the preset, then refetch.
+function onPreset() {
+  getRange(document.getElementById('rangeSelect').value);
+  fetchData();
+}
+// Hand-edited date field → flip the dropdown to "custom", normalise, then refetch.
+function onCustomDate() {
+  document.getElementById('rangeSelect').value = 'custom';
+  getRange('custom');
+  fetchData();
 }
 
 // ─── Retreaver: fetch all pages ───────────────────────────────────────────────
@@ -1538,10 +1581,10 @@ async function unpauseAll() {
 function fmtUSD(n) {
   return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-async function loadAdSpend() {
+async function loadAdSpend(rangeStart, rangeEnd) {
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  const ids = ['mSpendToday','mSpendWk7','mSpendWkCal','mSpendMo30','mSpendMoMTD'];
+  const ids = ['mSpendToday','mSpendWk7','mSpendWkCal','mSpendMo30','mSpendMoMTD','mSpendRange'];
   const setAll = v => ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = v; });
 
   const now = new Date();
@@ -1549,31 +1592,49 @@ async function loadAdSpend() {
   const startD = new Date(now); startD.setDate(startD.getDate() - 30);
   const start = fmt(startD);
 
+  // ── Live "now" cards: trailing-30 window, same query every refresh (cache hit) ──
   try {
     const res = await authedFetch(`/google-ads/spend?start=${start}&end=${end}`);
-    if (!res.ok) { setAll('—'); console.warn('ad-spend HTTP', res.status); return; }
-    const data = await res.json();
-    const byDay = {};
-    (data.rows || []).forEach(r => { if (r && r.date) byDay[r.date] = (byDay[r.date] || 0) + (Number(r.cost) || 0); });
+    if (!res.ok) { setAll('—'); console.warn('ad-spend HTTP', res.status); }
+    else {
+      const data = await res.json();
+      const byDay = {};
+      (data.rows || []).forEach(r => { if (r && r.date) byDay[r.date] = (byDay[r.date] || 0) + (Number(r.cost) || 0); });
 
-    const todayStr = end;
-    const d6  = new Date(now); d6.setDate(d6.getDate() - 6);        // trailing 7 incl today
-    const sun = new Date(now); sun.setDate(sun.getDate() - sun.getDay()); // calendar week start (Sun)
-    const d29 = new Date(now); d29.setDate(d29.getDate() - 29);     // trailing 30 incl today
-    const moStart = `${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;   // calendar month start
+      const todayStr = end;
+      const d6  = new Date(now); d6.setDate(d6.getDate() - 6);        // trailing 7 incl today
+      const sun = new Date(now); sun.setDate(sun.getDate() - sun.getDay()); // calendar week start (Sun)
+      const d29 = new Date(now); d29.setDate(d29.getDate() - 29);     // trailing 30 incl today
+      const moStart = `${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;   // calendar month start
 
-    const sumBetween = (lo, hi) => Object.keys(byDay)
-      .filter(d => d >= lo && d <= hi)
-      .reduce((s, d) => s + byDay[d], 0);
+      const sumBetween = (lo, hi) => Object.keys(byDay)
+        .filter(d => d >= lo && d <= hi)
+        .reduce((s, d) => s + byDay[d], 0);
 
-    document.getElementById('mSpendToday').textContent = fmtUSD(byDay[todayStr] || 0);
-    document.getElementById('mSpendWk7').textContent   = fmtUSD(sumBetween(fmt(d6), todayStr));
-    document.getElementById('mSpendWkCal').textContent = fmtUSD(sumBetween(fmt(sun), todayStr));
-    document.getElementById('mSpendMo30').textContent  = fmtUSD(sumBetween(fmt(d29), todayStr));
-    document.getElementById('mSpendMoMTD').textContent = fmtUSD(sumBetween(moStart, todayStr));
+      document.getElementById('mSpendToday').textContent = fmtUSD(byDay[todayStr] || 0);
+      document.getElementById('mSpendWk7').textContent   = fmtUSD(sumBetween(fmt(d6), todayStr));
+      document.getElementById('mSpendWkCal').textContent = fmtUSD(sumBetween(fmt(sun), todayStr));
+      document.getElementById('mSpendMo30').textContent  = fmtUSD(sumBetween(fmt(d29), todayStr));
+      document.getElementById('mSpendMoMTD').textContent = fmtUSD(sumBetween(moStart, todayStr));
+    }
   } catch (e) {
     setAll('—');
     console.warn('loadAdSpend failed:', e.message);
+  }
+
+  // ── Selected-range card: separate query for the dashboard's active date range.
+  // Worker KV-caches per start:end, so this only re-queries when the range changes
+  // while the trailing-30 query above stays a cache hit on every 30s refresh.
+  const rEl = document.getElementById('mSpendRange');
+  if (rEl && rangeStart && rangeEnd) {
+    try {
+      const res2 = await authedFetch(`/google-ads/spend?start=${rangeStart}&end=${rangeEnd}`);
+      if (res2.ok) {
+        const d2 = await res2.json();
+        const sum = (d2.rows || []).reduce((s, r) => s + (Number(r && r.cost) || 0), 0);
+        rEl.textContent = fmtUSD(sum);
+      } else { rEl.textContent = '—'; }
+    } catch (e) { rEl.textContent = '—'; console.warn('loadAdSpend range failed:', e.message); }
   }
 }
 
@@ -1675,8 +1736,10 @@ async function fetchData() {
   dot.className='brand-dot'; st.className='st'; st.textContent='Fetching...';
   err.style.display='none'; load.style.display='block';
 
+  let isHistorical = false;
   try {
     const { calls, start, end } = await fetchAllPages();
+    isHistorical = end < todayYMD();   // whole range is in the past → data is static
     await fetchTargetCaps();
     await loadOverridesFromServer();
     await fetchDialpadOutbound(start, end);
@@ -1687,10 +1750,16 @@ async function fetchData() {
     const eb = document.getElementById('eternaBody');
     if (eb) eb.innerHTML = '<p class="no-data" style="padding:16px;">Loading Eterna agents…</p>';
     fetchEternaAgents(start, end).then(renderEternaPanel);
-    loadAdSpend();  // account spend — out of critical path; worker KV-caches 15 min
+    loadAdSpend(start, end);  // account spend — out of critical path; worker KV-caches 15 min
     loadGhlDeals(start, end);  // Eterna Spark closed deals for the selected range
-    dot.className='brand-dot live'; st.className='st live';
-    st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
+    if (isHistorical) {
+      dot.className='brand-dot'; st.className='st';
+      st.textContent=`Historical · ${calls.length.toLocaleString()} calls · ${start}→${end}`;
+      document.getElementById('countdown').textContent='';
+    } else {
+      dot.className='brand-dot live'; st.className='st live';
+      st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
+    }
   } catch(e) {
     dot.className='brand-dot error'; st.className='st err';
     st.textContent='Connection error';
@@ -1704,7 +1773,7 @@ async function fetchData() {
     load.style.display='none';
   }
 
-  startCountdown();
+  if (!isHistorical) startCountdown();   // past ranges don't auto-refresh; manual Refresh still works
 }
 
 function startCountdown() {
@@ -1714,6 +1783,11 @@ function updateCountdown() {
   document.getElementById('countdown').textContent = `Refresh in ${countdown}s`;
 }
 
+// initialise the date inputs to today (and cap the max at today) before first load
+(function initDates(){
+  const t = todayYMD();
+  ['startDate','endDate'].forEach(id => { const el = document.getElementById(id); if (el) { el.value = t; el.max = t; } });
+})();
 fetchData();
 </script>
 </body>
