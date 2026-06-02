@@ -287,6 +287,11 @@
         <div class="ml">Selected range</div>
         <div class="mv a" id="mSpendRange">—</div>
       </div>
+      <div class="mc g">
+        <div class="ml">Cost / unique call</div>
+        <div class="mv g" id="mCPL">—</div>
+        <div class="ss-sub">spend ÷ unique calls · selected range</div>
+      </div>
     </div>
   </div>
 
@@ -446,6 +451,8 @@ const eternaRecCache = {};  // call_id → resolved recording URL (null = none),
 let dialpadInbound  = []; // raw inbound legs from /dialpad/calls?direction=inbound (both accounts) — for 949 AI → Dialpad handoff match
 let aiDropCalls     = []; // 949 AI calls with no Dialpad handoff (per-call drilldown)
 let aiRoutedCalls   = []; // 949 AI calls successfully routed to a Dialpad agent (per-call drilldown)
+let lastUniqueCalls = null; // latest unique-calls count from processCalls — for CPL
+let lastRangeSpend  = null; // latest selected-range Google Ads spend — for CPL
 
 // ─── Conversion tracker state (answered → closed) ──────────────────────────────
 // Set by the three async loaders (processCalls / fetchEternaAgents / renderDealsPanel)
@@ -939,6 +946,7 @@ function processCalls(calls, start, end) {
 
   document.getElementById('mTotal').textContent      = totTotal.toLocaleString();
   document.getElementById('mUnique').textContent     = totUnique.toLocaleString();
+  lastUniqueCalls = totUnique; renderCPL(); // feed CPL = ad spend ÷ unique calls
   document.getElementById('mAnswered').textContent   = totAnswered.toLocaleString();
   document.getElementById('mReceivable').textContent = totReceivable.toLocaleString();
   document.getElementById('mNotSold').textContent    = totNotSold.toLocaleString();
@@ -1827,6 +1835,14 @@ async function unpauseAll() {
 function fmtUSD(n) {
   return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+// CPL = Google Ads spend (selected range) ÷ unique calls (selected range). Both
+// load async (processCalls + loadAdSpend), so each calls this; renders once both ready.
+function renderCPL() {
+  const el = document.getElementById('mCPL');
+  if (!el) return;
+  if (lastRangeSpend == null || lastUniqueCalls == null || !lastUniqueCalls) { el.textContent = '—'; return; }
+  el.textContent = fmtUSD(lastRangeSpend / lastUniqueCalls);
+}
 async function loadAdSpend(rangeStart, rangeEnd) {
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
@@ -1879,6 +1895,7 @@ async function loadAdSpend(rangeStart, rangeEnd) {
         const d2 = await res2.json();
         const sum = (d2.rows || []).reduce((s, r) => s + (Number(r && r.cost) || 0), 0);
         rEl.textContent = fmtUSD(sum);
+        lastRangeSpend = sum; renderCPL(); // feed CPL = ad spend ÷ unique calls
       } else { rEl.textContent = '—'; }
     } catch (e) { rEl.textContent = '—'; console.warn('loadAdSpend range failed:', e.message); }
   }
