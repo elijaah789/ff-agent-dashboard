@@ -733,6 +733,7 @@ function processCalls(calls, start, end) {
   let totTotal=0, totUnique=0, totAnswered=0, totReceivable=0, totLongCalls=0, totNotSold=0, totLive=0;
   notSoldCalls = []; // reset details for the not-sold dropdown
   const notSoldSeen = new Set(); // dedupe by caller number
+  const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
 
   const callerCount = {};
   calls.forEach(call => {
@@ -789,10 +790,11 @@ function processCalls(calls, start, end) {
     const a   = agents[agent];
     const dur = parseInt(call.total_duration || 0, 10);
     a.total++; totTotal++;
+    if (call.caller) uniqueCallers.add(call.caller); // global distinct — counts a number once even if it reaches multiple agents
 
     if (call.caller && !a.callers.has(call.caller)) {
       a.callers.add(call.caller);
-      a.unique++; totUnique++;
+      a.unique++; // per-agent unique (table column) — unchanged
     }
 
     a.calls.push({
@@ -818,6 +820,10 @@ function processCalls(calls, start, end) {
     if (ANSWERED_S.has(s) && dur >= 60)  { a.receivable++; totReceivable++; }
     if (ANSWERED_S.has(s) && dur >= 600) { a.longCalls++; totLongCalls++; }
   });
+
+  // TRUE daily unique = distinct caller numbers across the whole window (not the
+  // per-agent sum, which double-counts a caller that round-robin sent to 2 agents).
+  totUnique = uniqueCallers.size;
 
   // Ensure every known Retreaver target has a row, even if it had 0 calls in this period.
   // This way all 4 agents appear with the admin override toggle even on a quiet day.
