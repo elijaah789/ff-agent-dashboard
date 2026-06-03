@@ -51,6 +51,12 @@
   .spend-strip .ss-title { font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text); }
   .spend-strip .ss-note { font-family:var(--font-mono); font-size:10px; color:var(--muted); margin-left:auto; }
   .spend-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .cohort-table { width:100%; border-collapse:collapse; font-size:13px; }
+  .cohort-table th, .cohort-table td { padding:7px 10px; text-align:left; border-bottom:1px solid var(--border); }
+  .cohort-table th.r, .cohort-table td.r { text-align:right; font-family:var(--font-mono); }
+  .cohort-table th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; }
+  .cohort-table tbody tr:last-child td { border-bottom:none; }
+  tr.cohort-header td { background:var(--surface); color:var(--text); font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700; padding:10px 12px; border-top:2px solid var(--border); }
   .spend-cards .mc { padding:14px 16px; }
   .ss-sub { font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-top:6px; }
   .ss-sub span { color:var(--text); }
@@ -225,6 +231,22 @@
     <div class="mc g"><div class="ml">Callbacks</div>     <div class="mv g" id="mCallbacks">—</div></div>
     <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
+  </div>
+
+  <div class="spend-strip" id="cohortStrip">
+    <div class="ss-head">
+      <span class="ss-title">Cohort breakdown — Financially Fluent vs Eterna</span>
+      <span class="ss-note">same metrics, split by team · overall = hero above · follows date range</span>
+    </div>
+    <table class="cohort-table">
+      <thead><tr>
+        <th>Cohort</th><th class="r">Total</th><th class="r">Unique</th><th class="r">Answered</th><th class="r">Missed</th><th class="r">Receivable</th><th class="r">10min+</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Financially Fluent</td><td class="r" id="ffTotal">—</td><td class="r" id="ffUnique">—</td><td class="r" id="ffAnswered">—</td><td class="r" id="ffMissed">—</td><td class="r" id="ffReceivable">—</td><td class="r" id="ffLong">—</td></tr>
+        <tr><td>Eterna</td><td class="r" id="etTotal">—</td><td class="r" id="etUnique">—</td><td class="r" id="etAnswered">—</td><td class="r" id="etMissed">—</td><td class="r" id="etReceivable">—</td><td class="r" id="etLong">—</td></tr>
+      </tbody>
+    </table>
   </div>
 
   <div class="spend-strip" id="aiHandoffStrip">
@@ -741,6 +763,9 @@ function processCalls(calls, start, end) {
   notSoldCalls = []; // reset details for the not-sold dropdown
   const notSoldSeen = new Set(); // dedupe by caller number
   const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
+  const uniqueFF = new Set(), uniqueEterna = new Set(); // per-cohort distinct callers
+  // Cohort by phone area code: 949 (Eterna agents) + 407 133189 ring-all = Eterna; everything else (435) = FF.
+  const cohortOf = (num) => { const d = String(num||'').replace(/\D/g,'').slice(-10); return (d.slice(0,3) === '949' || d === '4077320913') ? 'eterna' : 'ff'; };
 
   const callerCount = {};
   calls.forEach(call => {
@@ -791,13 +816,15 @@ function processCalls(calls, start, end) {
       name: agent, total:0, unique:0, callers:new Set(),
       answered:0, live:0, dur:0,
       receivable:0, longCalls:0, outbound:0, calls:[],
-      dialedNumber: normalizePhone(call.dialed_number || '')
+      dialedNumber: normalizePhone(call.dialed_number || ''),
+      cohort: cohortOf(call.dialed_number)
     };
 
     const a   = agents[agent];
     const dur = parseInt(call.total_duration || 0, 10);
     a.total++; totTotal++;
     if (call.caller) uniqueCallers.add(call.caller); // global distinct — counts a number once even if it reaches multiple agents
+    if (call.caller) (a.cohort === 'eterna' ? uniqueEterna : uniqueFF).add(call.caller); // per-cohort distinct
 
     if (call.caller && !a.callers.has(call.caller)) {
       a.callers.add(call.caller);
@@ -840,12 +867,28 @@ function processCalls(calls, start, end) {
         name, total:0, unique:0, callers:new Set(),
         answered:0, live:0, dur:0,
         receivable:0, longCalls:0, outbound:0, calls:[],
-        dialedNumber: targetIdToPhone[targetId] || ''
+        dialedNumber: targetIdToPhone[targetId] || '',
+        cohort: cohortOf(targetIdToPhone[targetId])
       };
     }
   });
 
   allAgents    = Object.values(agents).sort((a,b) => b.total - a.total);
+
+  // Dedupe agents that share a phone number (e.g. the stray duplicate Eterna target) — keep the busier one.
+  const _byNum = {};
+  allAgents.forEach(a => {
+    const k = (a.dialedNumber||'').replace(/\D/g,'').slice(-10) || ('nm:'+a.name);
+    if (!_byNum[k] || a.total > _byNum[k].total) _byNum[k] = a;
+  });
+  allAgents = Object.values(_byNum).sort((a,b) => b.total - a.total);
+
+  // Per-cohort rollups (FF vs Eterna) for the cohort-breakdown strip
+  const _coh = { ff:{t:0,a:0,r:0,l:0,lv:0}, eterna:{t:0,a:0,r:0,l:0,lv:0} };
+  allAgents.forEach(a => { const c = _coh[a.cohort==='eterna'?'eterna':'ff']; c.t+=a.total; c.a+=a.answered; c.r+=a.receivable; c.l+=a.longCalls; c.lv+=a.live; });
+  setCohortCells('ff', _coh.ff, uniqueFF.size);
+  setCohortCells('et', _coh.eterna, uniqueEterna.size);
+
   notSoldCount = totNotSold;
 
   // Answer rate = answered / total calls routed (matches Wolpert)
@@ -1011,8 +1054,15 @@ function renderTable() {
   const filtered = allAgents.filter(a => a.name.toLowerCase().includes(search));
   const maxTotal = Math.max(...allAgents.map(a=>a.total), 1);
 
-  let rows='', rank=0;
-  filtered.forEach(a => {
+  let rows='', rank=0, lastCohort=null;
+  // Group rows by cohort (FF first, then Eterna) with a section header before each.
+  const ordered = [...filtered].sort((a,b) =>
+    ((a.cohort==='eterna') - (b.cohort==='eterna')) || (b.total - a.total));
+  ordered.forEach(a => {
+    if (a.cohort !== lastCohort) {
+      lastCohort = a.cohort;
+      rows += `<tr class="cohort-header"><td colspan="17">${a.cohort==='eterna' ? 'ETERNA AGENTS' : 'FINANCIALLY FLUENT AGENTS'}</td></tr>`;
+    }
     rank++;
     const rate   = a.total ? Math.round((a.answered/a.total)*100) : 0;
     const barW   = Math.round((a.total/maxTotal)*100);
@@ -1834,6 +1884,14 @@ async function unpauseAll() {
 // in browser-local time to match every other panel and the user's actual day.
 function fmtUSD(n) {
   return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+// Fill the FF/Eterna cohort-breakdown strip. prefix 'ff' or 'et'; c = summed
+// {t,a,r,l,lv}; uniq = distinct callers for that cohort. Missed = total−answered−live.
+function setCohortCells(prefix, c, uniq) {
+  const set = (id,v) => { const el = document.getElementById(id); if (el) el.textContent = (Number(v)||0).toLocaleString(); };
+  set(prefix+'Total', c.t); set(prefix+'Unique', uniq);
+  set(prefix+'Answered', c.a); set(prefix+'Missed', Math.max(0, c.t - c.a - c.lv));
+  set(prefix+'Receivable', c.r); set(prefix+'Long', c.l);
 }
 // CPL = Google Ads spend (selected range) ÷ unique calls (selected range). Both
 // load async (processCalls + loadAdSpend), so each calls this; renders once both ready.
