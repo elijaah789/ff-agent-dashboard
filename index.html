@@ -170,6 +170,9 @@
   .dialpad-status-bar{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:16px;font-family:var(--font-mono);font-size:11px;color:var(--muted);display:none;}
   .dialpad-status-bar.active{display:block;}
   .dsb-title{font-size:10px;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px;color:var(--muted);}
+  .avail-badge{display:none;}
+  .avail-badge.on{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:9px;font-size:10px;font-weight:700;letter-spacing:0;text-transform:none;background:rgba(0,229,160,0.12);color:var(--accent);border:1px solid rgba(0,229,160,0.25);}
+  .avail-badge.zero{background:rgba(239,68,68,0.1);color:var(--red);border-color:rgba(239,68,68,0.25);}
   .dsb-agents{display:flex;gap:8px;flex-wrap:wrap;}
   .footer{margin-top:14px;display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:11px;color:var(--muted);flex-wrap:wrap;gap:8px;}
   .tog{cursor:pointer;text-decoration:underline;text-underline-offset:3px;}
@@ -218,12 +221,12 @@
   </div>
 
   <div class="dialpad-status-bar" id="dialpadBar">
-    <div class="dsb-title">FF agent availability (Dialpad)</div>
+    <div class="dsb-title">FF agent availability (Dialpad)<span class="avail-badge" id="ffAvailBadge"></span></div>
     <div class="dsb-agents" id="dialpadAgents"></div>
   </div>
 
   <div class="dialpad-status-bar" id="eternaBar">
-    <div class="dsb-title">Eterna agent availability (Dialpad)</div>
+    <div class="dsb-title">Eterna agent availability (Dialpad)<span class="avail-badge" id="etAvailBadge"></span></div>
     <div class="dsb-agents" id="eternaAgents"></div>
   </div>
 
@@ -239,6 +242,7 @@
     <div class="mc g"><div class="ml">Callbacks</div>     <div class="mv g" id="mCallbacks">—</div></div>
     <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
+    <div class="mc g"><div class="ml">Available now</div> <div class="mv g" id="mAvail">—</div></div>
   </div>
 
   <div class="spend-strip" id="cohortStrip">
@@ -497,6 +501,24 @@ const phoneToTarget = {};
 const targetCaps    = {};
 const dialpadStatus = {};
 const eternaStatus  = {}; // 2nd Dialpad account (Eterna, DIALPAD_BEARER_2) presence — DISPLAY ONLY, no auto-pause
+
+// ─── Eterna roster whitelist ────────────────────────────────────────────────
+// Only these 9 Eterna agents are kept (2026-06-03). The other 15 Retreaver
+// targets were hard-deleted; their Dialpad users still exist on the Eterna
+// account, so the availability strip is filtered to this list by name.
+const KEEP_ETERNA = [
+  ['allan','kavelish'], ['elora','dasilva'], ['irving','correa'],
+  ['jasmine','rodriguez'], ['jordan','little'], ['kevin','mccrea'],
+  ['kimone','fullerton'], ['megan','rivera'], ['steven','gold'],
+];
+function isKeepEterna(name) {
+  const toks = String(name || '').toLowerCase().replace(/[^a-z ]/g,' ').split(/\s+/).filter(Boolean);
+  if (!toks.length) return false;
+  return KEEP_ETERNA.some(([f,l]) =>
+    (toks.includes(f) && toks.includes(l)) ||   // full first+last match
+    (toks.length === 1 && toks[0] === f)         // Dialpad shows first name only
+  );
+}
 const dialpadUserIdToName = {}; // populated from /dialpad/users — Dialpad user id → display name (for outbound attribution)
 const targetIdToName = {};   // populated from /retreaver/targets — call.system_target_id → target.name
 const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
@@ -787,6 +809,7 @@ function updateDialpadBar() {
     seen.add(key);
     return true;
   });
+  renderAvailability();
   if (entries.length === 0) { bar.classList.remove('active'); return; }
   bar.classList.add('active');
   agents.innerHTML = entries.map(a => {
@@ -803,11 +826,13 @@ function updateEternaBar() {
   // eternaStatus is keyed by 'id:<userId>' AND each phone → dedupe by userId.
   const seen = new Set();
   const entries = Object.values(eternaStatus).filter(a => {
+    if (!isKeepEterna(a.name)) return false;   // only the 9 kept Eterna agents
     const key = a.userId || a.name || a.phone;
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+  renderAvailability();
   if (entries.length === 0) { bar.classList.remove('active'); return; }
   bar.classList.add('active');
   // Available first, then alphabetical — keeps the larger Eterna roster scannable.
@@ -819,6 +844,36 @@ function updateEternaBar() {
     const label = a.status === 'available' ? 'Available' : 'Unavailable';
     return `<span class="${cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${label}</span>`;
   }).join('');
+}
+
+// ─── Agents available to take a call ────────────────────────────────────────
+// An agent can take a call when its Retreaver target is NOT paused. The worker
+// cron folds every "can't take a call" reason — Dialpad unavailable, HELD
+// (manual override pause), and CAPPED (hit daily 60s-call cap) — into the
+// target.paused flag every minute, so a single `!paused` check covers them all.
+// Counted off the live target roster (deleted agents are already gone), split
+// FF vs Eterna by DID area code (949 / 407 ring-all = Eterna, else FF).
+function computeAvailability() {
+  let ff = 0, et = 0;
+  Object.keys(targetCaps).forEach(id => {
+    if (targetCaps[id].paused) return;                 // paused / HELD / CAPPED / unavailable
+    const d = String(targetIdToPhone[id] || '').replace(/\D/g,'').slice(-10);
+    if (d.slice(0,3) === '949' || d === '4077320913') et++; else ff++;
+  });
+  return { ff, et, overall: ff + et };
+}
+function renderAvailability() {
+  const a = computeAvailability();
+  const m = document.getElementById('mAvail');
+  if (m) m.textContent = a.overall;
+  const setBadge = (id, n) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = `${n} available`;
+    el.className = 'avail-badge on' + (n === 0 ? ' zero' : '');
+  };
+  setBadge('ffAvailBadge', a.ff);
+  setBadge('etAvailBadge', a.et);
 }
 
 // ─── Process Retreaver calls ──────────────────────────────────────────────────
@@ -1899,6 +1954,7 @@ async function fetchTargetCaps() {
           concurrency:  t.concurrency_cap || null,
           inProgress:   t.calls_in_progress || 0,
           weight:       t.weight || 1,
+          paused:       !!t.paused,   // cron folds presence + HELD override + CAPPED into this flag
         };
         // Build the id→name + id→phone maps used as fallback when call.tid is null
         if (t.id) {
@@ -1917,6 +1973,7 @@ async function fetchTargetCaps() {
       page++;
     }
     console.log('Target caps loaded:', Object.keys(targetCaps).length);
+    renderAvailability();
   } catch(e) {
     console.warn('Could not fetch target caps:', e.message);
   }
