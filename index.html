@@ -57,6 +57,9 @@
   .cohort-table th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; }
   .cohort-table tbody tr:last-child td { border-bottom:none; }
   tr.cohort-header td { background:var(--surface); color:var(--text); font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700; padding:10px 12px; border-top:2px solid var(--border); }
+  .state-tag { display:inline-block; margin-left:8px; padding:1px 6px; border-radius:4px; font-family:var(--font-mono); font-size:9px; font-weight:700; letter-spacing:0.06em; vertical-align:middle; }
+  .state-tag.held   { background:rgba(148,163,184,0.16); color:#94a3b8; border:1px solid rgba(148,163,184,0.45); }
+  .state-tag.capped { background:rgba(239,68,68,0.15);  color:#ef4444; border:1px solid rgba(239,68,68,0.45); }
   .spend-cards .mc { padding:14px 16px; }
   .ss-sub { font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-top:6px; }
   .ss-sub span { color:var(--text); }
@@ -1113,12 +1116,22 @@ function renderTable() {
       }
     }
 
+    // At-a-glance pause reason: HELD = manual indefinite hold (override paused, never
+    // auto-resumes); CAPPED = hit daily 60s-call cap (auto, resumes midnight ET).
+    let stateTag = '';
+    const capDaily = (targetId && targetCaps[targetId]) ? targetCaps[targetId].daily : null;
+    if (overrideState === 'paused') {
+      stateTag = '<span class="state-tag held" title="Manually held — stays paused until you resume">HELD</span>';
+    } else if (capDaily != null && a.receivable >= capDaily) {
+      stateTag = '<span class="state-tag capped" title="Hit daily cap — auto-resumes at midnight ET">CAPPED</span>';
+    }
+
     const detailId = `detail-${rank}`;
     const iconId   = `icon-${rank}`;
     rows += `<tr class="agent-row${rowVariant}" onclick="toggleDetail('${detailId}','${iconId}')">
       <td style="width:20px;"><span class="expand-icon" id="${iconId}">▶</span></td>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${rank}</td>
-      <td><div class="aname">${esc(a.name)}</div></td>
+      <td><div class="aname">${esc(a.name)}${stateTag}</div></td>
       <td><div class="avail-cell">${dpPill}${overrideMini}</div></td>
       <td class="r vm">${a.total.toLocaleString()}</td>
       <td class="r vg">${a.unique.toLocaleString()}</td>
