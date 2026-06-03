@@ -218,8 +218,13 @@
   </div>
 
   <div class="dialpad-status-bar" id="dialpadBar">
-    <div class="dsb-title">Agent availability (Dialpad)</div>
+    <div class="dsb-title">FF agent availability (Dialpad)</div>
     <div class="dsb-agents" id="dialpadAgents"></div>
+  </div>
+
+  <div class="dialpad-status-bar" id="eternaBar">
+    <div class="dsb-title">Eterna agent availability (Dialpad)</div>
+    <div class="dsb-agents" id="eternaAgents"></div>
   </div>
 
   <div class="hero">
@@ -491,6 +496,7 @@ let convDealsByAgent   = {};   // {agentName: {count, premium}} closing-agent ro
 const phoneToTarget = {};
 const targetCaps    = {};
 const dialpadStatus = {};
+const eternaStatus  = {}; // 2nd Dialpad account (Eterna, DIALPAD_BEARER_2) presence — DISPLAY ONLY, no auto-pause
 const dialpadUserIdToName = {}; // populated from /dialpad/users — Dialpad user id → display name (for outbound attribution)
 const targetIdToName = {};   // populated from /retreaver/targets — call.system_target_id → target.name
 const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
@@ -720,7 +726,39 @@ async function fetchDialpadStatuses() {
     dpDebug += `  Status summary: ${JSON.stringify(summary)}\n`;
     dpDebug += `  Mapped to Retreaver: ${retreaverPauses.length} agents\n`;
 
+    // ─── Eterna (2nd Dialpad account, DIALPAD_BEARER_2) presence — DISPLAY ONLY ───
+    // These users have no display_name; their 949 numbers match the Retreaver 949
+    // targets, so label pills by phone→target name. No auto-pause here — the worker
+    // cron (which polls both accounts) and manual control own Eterna pause state.
+    try {
+      Object.keys(eternaStatus).forEach(k => delete eternaStatus[k]);
+      const eRes = await authedFetch('/dialpad/eterna-users');
+      if (eRes.ok) {
+        const eJson  = await eRes.json();
+        const eUsers = eJson.users || eJson.items || (Array.isArray(eJson) ? eJson : []);
+        eUsers.forEach(user => {
+          const phones = (user.phone_numbers || []).map(p =>
+            normalizePhone(typeof p === 'object' ? (p.number || p.value || '') : p)
+          ).filter(Boolean);
+          const status  = user.is_available === true ? 'available' : 'unavailable';
+          const primary = phones[0] || '';
+          const dpName  = user.display_name || `${user.first_name||''} ${user.last_name||''}`.trim();
+          const tgt     = primary ? phoneToTarget[primary] : null;
+          const name    = dpName || (tgt ? tgt.name : '') || (primary ? `+1${primary}` : '');
+          const entry   = { name, status, userId: user.id, phone: primary, cohort: 'eterna' };
+          if (user.id) eternaStatus['id:' + user.id] = entry;
+          phones.forEach(phone => { eternaStatus[phone] = entry; });
+        });
+      } else {
+        dpDebug += `  Eterna users HTTP ${eRes.status}\n`;
+      }
+      dpDebug += `  Eterna presence entries: ${new Set(Object.values(eternaStatus).map(e=>e.userId)).size}\n`;
+    } catch (e) {
+      dpDebug += `  Eterna presence FATAL: ${e.message}\n`;
+    }
+
     updateDialpadBar();
+    updateEternaBar();
     renderTable();
 
   } catch(e) {
@@ -751,6 +789,31 @@ function updateDialpadBar() {
   });
   if (entries.length === 0) { bar.classList.remove('active'); return; }
   bar.classList.add('active');
+  agents.innerHTML = entries.map(a => {
+    const cls   = a.status === 'available' ? 'dp-pill dp-available' : 'dp-pill dp-unavailable';
+    const label = a.status === 'available' ? 'Available' : 'Unavailable';
+    return `<span class="${cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${label}</span>`;
+  }).join('');
+}
+
+function updateEternaBar() {
+  const bar    = document.getElementById('eternaBar');
+  const agents = document.getElementById('eternaAgents');
+  if (!bar || !agents) return;
+  // eternaStatus is keyed by 'id:<userId>' AND each phone → dedupe by userId.
+  const seen = new Set();
+  const entries = Object.values(eternaStatus).filter(a => {
+    const key = a.userId || a.name || a.phone;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (entries.length === 0) { bar.classList.remove('active'); return; }
+  bar.classList.add('active');
+  // Available first, then alphabetical — keeps the larger Eterna roster scannable.
+  entries.sort((a,b) => a.status === b.status
+    ? String(a.name).localeCompare(String(b.name))
+    : (a.status === 'available' ? -1 : 1));
   agents.innerHTML = entries.map(a => {
     const cls   = a.status === 'available' ? 'dp-pill dp-available' : 'dp-pill dp-unavailable';
     const label = a.status === 'available' ? 'Available' : 'Unavailable';
@@ -1075,7 +1138,7 @@ function renderTable() {
                  : rate>=50?`<span class="badge ba">Moderate</span>`
                  :           `<span class="badge br">Low</span>`;
 
-    let dp = dialpadStatus[a.dialedNumber];
+    let dp = dialpadStatus[a.dialedNumber] || eternaStatus[a.dialedNumber];
     if (!dp) {
       const nameKey = a.name.toLowerCase().replace(/[^a-z]/g,'');
       dp = dialpadStatus[nameKey] || null;
