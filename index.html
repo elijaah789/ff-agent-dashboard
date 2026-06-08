@@ -459,7 +459,7 @@ const dialpadStatus = {};
 const eternaStatus  = {}; // 2nd Dialpad account (Eterna, DIALPAD_BEARER_2) presence — DISPLAY ONLY, no auto-pause
 
 // ─── Eterna roster whitelist ────────────────────────────────────────────────
-// Kept Eterna agents (9 from 2026-06-03 + 3 added 2026-06-08 = 12). The other
+// Kept Eterna agents (9 from 2026-06-03 + 4 added 2026-06-08 = 13). The other
 // 15 trimmed Retreaver targets were hard-deleted; their Dialpad users still
 // exist on the Eterna account, so the availability strip is filtered to this
 // list. isKeepEterna matches the Dialpad display_name (line ~723), so entries
@@ -469,7 +469,7 @@ const KEEP_ETERNA = [
   ['jasmine','rodriguez'], ['jordan','little'], ['kevin','mccrea'],
   ['kimone','fullerton'], ['megan','rivera'], ['steven','gold'],
   ['chrystyan','nodarse'], ['liodey','sanchez'], ['lio','sanchez'],
-  ['sterling','harrell'],
+  ['sterling','harrell'], ['anthony','cerrone'],
 ];
 function isKeepEterna(name) {
   const toks = String(name || '').toLowerCase().replace(/[^a-z ]/g,' ').split(/\s+/).filter(Boolean);
