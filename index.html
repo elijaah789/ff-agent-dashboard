@@ -300,7 +300,16 @@
       <span class="ss-title">Google Ads spend — account total</span>
       <span class="ss-note">updates ~15 min</span>
     </div>
-    <div class="spend-cards">
+    <div id="spendLock" style="display:none; padding:18px 0; text-align:center;">
+      <div style="font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-bottom:12px;">&#128274; Spend data is locked</div>
+      <div style="display:flex; gap:8px; justify-content:center; max-width:340px; margin:0 auto;">
+        <input id="spendPassInput" type="password" autocomplete="off" placeholder="Spend password"
+          style="flex:1; background:var(--surface2); border:1px solid var(--border2); color:var(--text); font-family:var(--font-mono); font-size:12px; padding:7px 10px; border-radius:6px; outline:none;" />
+        <button id="spendPassBtn" class="btn">Show spend</button>
+      </div>
+      <div id="spendPassErr" style="display:none; font-family:var(--font-mono); font-size:11px; color:var(--red); margin-top:8px;">Wrong password.</div>
+    </div>
+    <div class="spend-cards" id="spendCards">
       <div class="mc b">
         <div class="ml">Today</div>
         <div class="mv b" id="mSpendToday">—</div>
@@ -528,6 +537,7 @@ async function authedFetch(path, init) {
   const headers = Object.assign({}, opts.headers || {}, {
     'Authorization': 'Bearer ' + SHARED_TOKEN,
     'X-Dash-Pass': DASH_PASS,
+    'X-Spend-Pass': SPEND_PASS,
   });
   const res = await fetch(WORKER_URL + path, Object.assign({}, opts, { headers }));
   if (res.status === 401) {
@@ -1783,7 +1793,51 @@ function renderCPL() {
   if (lastRangeSpend == null || lastUniqueCalls == null || !lastUniqueCalls) { el.textContent = '—'; return; }
   el.textContent = fmtUSD(lastRangeSpend / lastUniqueCalls);
 }
+// ─── Spend password (second tier) ────────────────────────────────────────────
+// Ad-spend numbers need their own password on top of the dashboard one. Stored
+// per device in localStorage; worker rejects /google-ads/spend without it (403).
+let SPEND_PASS = localStorage.getItem('ff_spend_pass') || '';
+
+function showSpendLock(isRetry) {
+  document.getElementById('spendLock').style.display = 'block';
+  document.getElementById('spendCards').style.display = 'none';
+  document.getElementById('spendPassErr').style.display = isRetry ? 'block' : 'none';
+}
+
+function hideSpendLock() {
+  document.getElementById('spendLock').style.display = 'none';
+  document.getElementById('spendCards').style.display = '';
+}
+
+async function submitSpendPassword() {
+  const input = document.getElementById('spendPassInput');
+  const btn = document.getElementById('spendPassBtn');
+  const candidate = input.value.trim();
+  if (!candidate) return;
+  btn.disabled = true; btn.textContent = 'Checking...';
+  try {
+    const res = await fetch(WORKER_URL + '/auth/check?scope=spend', {
+      headers: { 'Authorization': 'Bearer ' + SHARED_TOKEN, 'X-Dash-Pass': DASH_PASS, 'X-Spend-Pass': candidate },
+    });
+    if (res.ok) {
+      SPEND_PASS = candidate;
+      localStorage.setItem('ff_spend_pass', candidate);
+      input.value = '';
+      hideSpendLock();
+      fetchData();   // full refresh fills the spend cards for the current range
+    } else {
+      showSpendLock(true);
+      input.value = ''; input.focus();
+    }
+  } catch (e) {
+    showSpendLock(true);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Show spend';
+  }
+}
+
 async function loadAdSpend(rangeStart, rangeEnd) {
+  if (!SPEND_PASS) { showSpendLock(false); return; }
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const ids = ['mSpendToday','mSpendWk7','mSpendWkCal','mSpendMo30','mSpendMoMTD','mSpendRange'];
@@ -1797,8 +1851,14 @@ async function loadAdSpend(rangeStart, rangeEnd) {
   // ── Live "now" cards: trailing-30 window, same query every refresh (cache hit) ──
   try {
     const res = await authedFetch(`/google-ads/spend?start=${start}&end=${end}`);
+    if (res.status === 403) {
+      // spend password rejected (rotated?) — relock and forget the stored copy
+      localStorage.removeItem('ff_spend_pass'); SPEND_PASS = '';
+      setAll('—'); showSpendLock(true); return;
+    }
     if (!res.ok) { setAll('—'); console.warn('ad-spend HTTP', res.status); }
     else {
+      hideSpendLock();
       const data = await res.json();
       const byDay = {};
       (data.rows || []).forEach(r => { if (r && r.date) byDay[r.date] = (byDay[r.date] || 0) + (Number(r.cost) || 0); });
@@ -2147,6 +2207,10 @@ function updateCountdown() {
 // Password gate wiring — unlock button + Enter key
 document.getElementById('passBtn').addEventListener('click', submitPassword);
 document.getElementById('passInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitPassword(); });
+
+// Spend-lock wiring (second-tier password for Google Ads spend)
+document.getElementById('spendPassBtn').addEventListener('click', submitSpendPassword);
+document.getElementById('spendPassInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitSpendPassword(); });
 
 if (WORKER_URL && SHARED_TOKEN && !DASH_PASS) {
   showPassGate(false);
