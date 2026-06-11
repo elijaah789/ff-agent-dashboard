@@ -185,6 +185,17 @@
 </head>
 <body>
 
+<div id="passGate" style="display:none; position:fixed; inset:0; z-index:1000; background:var(--bg); align-items:center; justify-content:center;">
+  <div style="background:var(--surface); border:1px solid var(--border2); border-radius:12px; padding:32px 36px; width:340px; max-width:90vw; text-align:center;">
+    <div style="font-size:14px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; margin-bottom:6px;">Financially Fluent</div>
+    <div style="font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-bottom:20px;">Enter password to view the live agent report</div>
+    <input id="passInput" type="password" autocomplete="current-password" placeholder="Password"
+      style="width:100%; background:var(--surface2); border:1px solid var(--border2); color:var(--text); font-family:var(--font-mono); font-size:14px; padding:10px 12px; border-radius:6px; outline:none; margin-bottom:12px;" />
+    <button id="passBtn" class="btn" style="width:100%; padding:10px;">Unlock</button>
+    <div id="passErr" style="display:none; font-family:var(--font-mono); font-size:11px; color:var(--red); margin-top:10px;">Wrong password — try again.</div>
+  </div>
+</div>
+
 <div class="topbar">
   <div class="brand">
     <div class="brand-dot" id="dot"></div>
@@ -508,12 +519,62 @@ async function loadOverridesFromServer() {
 }
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
-function authedFetch(path, init) {
+// Dashboard password: entered once per device, stored in localStorage, sent as
+// X-Dash-Pass header (never in the URL). Worker rejects data calls without it.
+let DASH_PASS = localStorage.getItem('ff_pass') || '';
+
+async function authedFetch(path, init) {
   const opts = init || {};
   const headers = Object.assign({}, opts.headers || {}, {
     'Authorization': 'Bearer ' + SHARED_TOKEN,
+    'X-Dash-Pass': DASH_PASS,
   });
-  return fetch(WORKER_URL + path, Object.assign({}, opts, { headers }));
+  const res = await fetch(WORKER_URL + path, Object.assign({}, opts, { headers }));
+  if (res.status === 401) {
+    localStorage.removeItem('ff_pass');
+    showPassGate(false);
+  }
+  return res;
+}
+
+function showPassGate(isRetry) {
+  const gate = document.getElementById('passGate');
+  if (gate.style.display === 'flex') {
+    if (isRetry) document.getElementById('passErr').style.display = 'block';
+    return;
+  }
+  gate.style.display = 'flex';
+  document.getElementById('passErr').style.display = isRetry ? 'block' : 'none';
+  document.getElementById('passInput').value = '';
+  document.getElementById('passInput').focus();
+}
+
+async function submitPassword() {
+  const input = document.getElementById('passInput');
+  const btn = document.getElementById('passBtn');
+  const errEl = document.getElementById('passErr');
+  const candidate = input.value.trim();
+  if (!candidate) return;
+  btn.disabled = true; btn.textContent = 'Checking...'; errEl.style.display = 'none';
+  try {
+    const res = await fetch(WORKER_URL + '/auth/check', {
+      headers: { 'Authorization': 'Bearer ' + SHARED_TOKEN, 'X-Dash-Pass': candidate },
+    });
+    if (res.ok) {
+      DASH_PASS = candidate;
+      localStorage.setItem('ff_pass', candidate);
+      document.getElementById('passGate').style.display = 'none';
+      fetchData();
+    } else {
+      errEl.style.display = 'block';
+      input.value = ''; input.focus();
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error — try again.';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Unlock';
+  }
 }
 
 function showSetupBanner() {
@@ -2082,7 +2143,16 @@ function updateCountdown() {
   const t = todayYMD();
   ['startDate','endDate'].forEach(id => { const el = document.getElementById(id); if (el) { el.value = t; el.max = t; } });
 })();
-fetchData();
+
+// Password gate wiring — unlock button + Enter key
+document.getElementById('passBtn').addEventListener('click', submitPassword);
+document.getElementById('passInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitPassword(); });
+
+if (WORKER_URL && SHARED_TOKEN && !DASH_PASS) {
+  showPassGate(false);
+} else {
+  fetchData();
+}
 </script>
 </body>
 </html>
