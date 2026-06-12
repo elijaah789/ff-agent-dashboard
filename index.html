@@ -247,7 +247,7 @@
     <div class="mc g"><div class="ml">Answered</div>      <div class="mv g" id="mAnswered">—</div></div>
     <div class="mc p"><div class="ml">Receivable</div>    <div class="mv p" id="mReceivable">—</div></div>
     <div class="mc r"><div class="ml">Not sold</div>      <div class="mv r" id="mNotSold">—</div></div>
-    <div class="mc r"><div class="ml">Missed calls</div>  <div class="mv r" id="mMissed">—</div></div>
+    <div class="mc r" onclick="openMissedPanel()" style="cursor:pointer;" title="Click to see every missed call"><div class="ml">Missed calls</div>  <div class="mv r" id="mMissed">—</div></div>
     <div class="mc p"><div class="ml">10min+ calls</div>  <div class="mv p" id="mLongCalls">—</div></div>
     <div class="mc b"><div class="ml">Live now</div>      <div class="mv b" id="mLive">—</div></div>
     <div class="mc g"><div class="ml">Callbacks</div>     <div class="mv g" id="mCallbacks">—</div></div>
@@ -361,6 +361,15 @@
       <span class="acp-hint">click row to expand · ▶ to play recording · ✓ = agent called this number back from Dialpad</span>
     </summary>
     <div id="allCallsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
+
+  <details id="missedPanel" class="all-calls-panel">
+    <summary>
+      <span class="acp-title">Missed calls</span>
+      <span class="acp-count" id="missedCount">—</span>
+      <span class="acp-hint">every call that never connected to an agent · matches the Missed calls metric · ✓ = agent called this number back from Dialpad</span>
+    </summary>
+    <div id="missedBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
   </details>
 
   <details id="allOutboundPanel" class="all-calls-panel">
@@ -948,7 +957,7 @@ function processCalls(calls, start, end) {
     // or not Retreaver ever picked a target. NOTSOLD_S ⊂ MISSED_S, and
     // MISSED_S statuses never reach the routed-call counting below, so this
     // can't double-count against the totTotal-based remainder.
-    if (MISSED_S.has(s)) totMissedEvents++;
+    if (MISSED_S.has(s)) { totMissedEvents++; call._missed = true; }
 
     if (NOTSOLD_S.has(s)) {
       const callerTotal = callerCount[call.caller] || 1;
@@ -1008,6 +1017,9 @@ function processCalls(calls, start, end) {
     });
 
     if (LIVE_S.has(s))               { a.live++; totLive++; a.dur += dur; return; }
+    // Routed but neither answered nor live = the remainder term of the Missed
+    // metric; tag it so the Missed panel lists exactly what the card counts.
+    if (!ANSWERED_S.has(s)) call._missed = true;
     if (dur > 0) a.dur += dur;
     // Use status-based metrics. Retreaver's `receivable` flag depends on
     // campaign payout config and is currently false for every call on this
@@ -1129,6 +1141,9 @@ function processCalls(calls, start, end) {
 
   document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
   document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
+  const missedList = calls.filter(c => c._missed);
+  document.getElementById('missedCount').textContent = missedList.length.toLocaleString();
+  document.getElementById('missedBody').innerHTML    = buildMissedTable(missedList);
   document.getElementById('allOutboundCount').textContent = dialpadOutbound.length.toLocaleString();
   document.getElementById('allOutboundBody').innerHTML    = buildOutboundTable();
 
@@ -1447,6 +1462,62 @@ function buildAllCallsTable(calls) {
     </thead>
     <tbody>${rows}</tbody>
   </table>`;
+}
+
+// Missed-calls drilldown: one row per missed EVENT (a caller who retried 3×
+// appears 3×), so the row count always equals the Missed calls hero metric.
+function buildMissedTable(missed) {
+  if (!missed || missed.length === 0) {
+    return '<p class="no-data" style="padding:16px;">No missed calls in this period.</p>';
+  }
+  const sorted = [...missed].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
+  const attempts = {};
+  sorted.forEach(c => { if (c.caller) attempts[c.caller] = (attempts[c.caller]||0) + 1; });
+  const rows = sorted.map(c => {
+    const t  = c.start_time ? new Date(c.start_time) : null;
+    const tm = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
+    const dt = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const s  = (c.status || '').toLowerCase();
+    const reason = MISSED_S.has(s)
+      ? (s === 'not-open' || s === 'not_open' ? 'not-open · outside hours'
+        : s === 'no-target' || s === 'no_target' ? 'no-target · nobody available'
+        : s)
+      : `rang ${esc(c.tid || targetIdToName[c.system_target_id] || 'agent')} · unanswered`;
+    const att = attempts[c.caller] > 1
+      ? `<span class="va">${attempts[c.caller]}×</span>`
+      : '<span class="vm">1×</span>';
+    const cb = c._callback
+      ? '<span class="acp-cb-yes">✓ Yes</span>'
+      : '<span class="acp-cb-no">—</span>';
+    return `<tr>
+      <td class="r" style="white-space:nowrap;">${dt} ${tm}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;">${esc(fmtPhoneE164(c.caller))}</td>
+      <td>${esc(c.caller_city || '—')}, ${esc(c.caller_state || '—')}</td>
+      <td><span class="vr">${esc(reason)}</span></td>
+      <td class="r">${att}</td>
+      <td class="r">${cb}</td>
+    </tr>`;
+  }).join('');
+
+  return `<table>
+    <thead>
+      <tr>
+        <th class="r">Time</th>
+        <th>Caller</th>
+        <th>Location</th>
+        <th>Reason</th>
+        <th class="r">Attempts</th>
+        <th class="r">Called back?</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function openMissedPanel() {
+  const p = document.getElementById('missedPanel');
+  p.open = true;
+  p.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function buildOutboundTable() {
