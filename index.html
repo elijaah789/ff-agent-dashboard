@@ -451,6 +451,11 @@ const NOTSOLD_S = new Set(['no-target','no_target','no-buyer','no_buyer','no-ans
 // Used only by per-call detail dropdowns to label individual call status.
 // Aggregate "Answered" metric still uses the existing 90s+receivable rule.
 const ANSWERED_S = new Set(['finished','completed']);
+// Caller never reached an agent — Retreaver's reason codes (not-open = outside
+// business hours, no-target = nobody available, etc.) all display as one
+// "missed" label; the raw reason stays in the pill's hover tooltip.
+const MISSED_S = new Set(['no-target','no_target','no-buyer','no_buyer','no-answer','no_answer','not-open','not_open','rejected']);
+const missedLbl = s => MISSED_S.has((s || '').toLowerCase().trim()) ? 'missed' : s;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let allAgents    = [];
@@ -1287,7 +1292,7 @@ function buildDetailTable(a) {
     const isLive = LIVE_S.has(cs);
     const isRec  = (c.receivable === true || c.receivable === 'true') && c.duration >= 60;
     const statusCls = isLive ? 'vb' : isAns ? 'vg' : 'vm';
-    const statusLbl = isLive ? 'Live' : isAns ? 'Answered' : (c.status || 'No answer');
+    const statusLbl = isLive ? 'Live' : isAns ? 'Answered' : (missedLbl(c.status) || 'missed');
     const recLbl  = isRec ? '<span class="vg">Yes</span>' : '<span class="vm">No</span>';
     const recLink = c.recording_url
       ? `<a href="${esc(c.recording_url)}" target="_blank" rel="noopener" class="rec-btn" onclick="event.stopPropagation();">▶ Play</a>`
@@ -1341,7 +1346,7 @@ function buildNotSoldTable() {
       <td class="r" style="font-family:var(--font-mono);font-size:11px;">${date} ${time}</td>
       <td style="font-family:var(--font-mono);font-size:11px;">${esc(c.caller)}</td>
       <td>${esc(c.caller_city)}, ${esc(c.caller_state)}</td>
-      <td><span class="vr">${esc(c.status || 'no-answer')}</span></td>
+      <td><span class="vr" title="${esc(c.status || '')}">${esc(missedLbl(c.status) || 'missed')}</span></td>
       <td class="r">${att}</td>
       <td class="r" style="font-family:var(--font-mono);font-size:11px;">${fmtDur(c.duration)}</td>
       <td class="r">${recLink}</td>
@@ -1393,7 +1398,7 @@ function buildAllCallsTable(calls) {
     if (LIVE_S.has(s))                   { outcome = c.target_name || 'Live'; pillCls = 'connected'; }
     else if (c.target_name && dur >= 30) { outcome = c.target_name;            pillCls = 'connected'; }
     else if (c.target_name)              { outcome = `${c.target_name} (${dur}s)`; pillCls = 'short'; }
-    else if (s === 'no-answer')          { outcome = 'Missed';                 pillCls = 'missed'; }
+    else if (MISSED_S.has(s))            { outcome = 'Missed';                 pillCls = 'missed'; }
     else if (dur > 0 && dur < 10)        { outcome = `Hung up (${dur}s)`;       pillCls = 'short'; }
     else                                  { outcome = c.status || '—';          pillCls = 'missed'; }
 
@@ -1408,7 +1413,7 @@ function buildAllCallsTable(calls) {
       <td class="r" style="white-space:nowrap;">${dt} ${tm}</td>
       <td style="font-family:var(--font-mono);font-size:12px;">${esc(fmtPhoneE164(c.caller))}</td>
       <td>${esc(c.caller_city || '—')}, ${esc(c.caller_state || '—')}</td>
-      <td><span class="acp-pill ${pillCls}">${esc(c.status || '—')}</span></td>
+      <td><span class="acp-pill ${pillCls}" title="${esc(c.status || '')}">${esc(missedLbl(c.status) || '—')}</span></td>
       <td class="r">${fmtDur(dur)}</td>
       <td>${esc(outcome)}</td>
       <td class="r">${cb}</td>
