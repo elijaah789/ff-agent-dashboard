@@ -367,7 +367,7 @@
     <summary>
       <span class="acp-title">Missed calls</span>
       <span class="acp-count" id="missedCount">—</span>
-      <span class="acp-hint">every call that never connected to an agent · matches the Missed calls metric · ✓ = agent called this number back from Dialpad</span>
+      <span class="acp-hint">one row per number · Attempts = how many times it called and missed · ✓ = agent called this number back from Dialpad</span>
     </summary>
     <div id="missedBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
   </details>
@@ -1142,7 +1142,8 @@ function processCalls(calls, start, end) {
   document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
   document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
   const missedList = calls.filter(c => c._missed);
-  document.getElementById('missedCount').textContent = missedList.length.toLocaleString();
+  const missedUnique = new Set(missedList.map(c => c.caller || c.uuid)).size;
+  document.getElementById('missedCount').textContent = missedUnique.toLocaleString();
   document.getElementById('missedBody').innerHTML    = buildMissedTable(missedList);
   document.getElementById('allOutboundCount').textContent = dialpadOutbound.length.toLocaleString();
   document.getElementById('allOutboundBody').innerHTML    = buildOutboundTable();
@@ -1464,16 +1465,22 @@ function buildAllCallsTable(calls) {
   </table>`;
 }
 
-// Missed-calls drilldown: one row per missed EVENT (a caller who retried 3×
-// appears 3×), so the row count always equals the Missed calls hero metric.
+// Missed-calls drilldown: ONE ROW PER NUMBER (latest attempt shown; the
+// Attempts column carries the repeat count). The hero metric still counts
+// every missed EVENT, so the panel chip (unique numbers) can be lower.
 function buildMissedTable(missed) {
   if (!missed || missed.length === 0) {
     return '<p class="no-data" style="padding:16px;">No missed calls in this period.</p>';
   }
   const sorted = [...missed].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
-  const attempts = {};
-  sorted.forEach(c => { if (c.caller) attempts[c.caller] = (attempts[c.caller]||0) + 1; });
-  const rows = sorted.map(c => {
+  const byCaller = new Map(); // newest-first, so first hit per number wins
+  sorted.forEach(c => {
+    const key = c.caller || c.uuid;
+    const row = byCaller.get(key);
+    if (!row) byCaller.set(key, Object.assign({}, c, { _attempts: 1, _calledBack: !!c._callback }));
+    else { row._attempts++; row._calledBack = row._calledBack || !!c._callback; }
+  });
+  const rows = [...byCaller.values()].map(c => {
     const t  = c.start_time ? new Date(c.start_time) : null;
     const tm = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
     const dt = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
@@ -1483,10 +1490,10 @@ function buildMissedTable(missed) {
         : s === 'no-target' || s === 'no_target' ? 'no-target · nobody available'
         : s)
       : `rang ${esc(c.tid || targetIdToName[c.system_target_id] || 'agent')} · unanswered`;
-    const att = attempts[c.caller] > 1
-      ? `<span class="va">${attempts[c.caller]}×</span>`
+    const att = c._attempts > 1
+      ? `<span class="va">${c._attempts}×</span>`
       : '<span class="vm">1×</span>';
-    const cb = c._callback
+    const cb = c._calledBack
       ? '<span class="acp-cb-yes">✓ Yes</span>'
       : '<span class="acp-cb-no">—</span>';
     return `<tr>
