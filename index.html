@@ -926,7 +926,6 @@ function processCalls(calls, start, end) {
   const agents     = {};
   const statusCount= {};
   let totTotal=0, totUnique=0, totAnswered=0, totReceivable=0, totLongCalls=0, totNotSold=0, totLive=0;
-  let totMissedEvents=0; // calls with a MISSED_S status (not-open / no-target / no-answer / rejected) — never connected to an agent
   notSoldCalls = []; // reset details for the not-sold dropdown
   const notSoldSeen = new Set(); // dedupe by caller number
   const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
@@ -953,11 +952,10 @@ function processCalls(calls, start, end) {
 
     if (CAMPAIGN_KEY && call.system_campaign_id && call.campaign_key && call.campaign_key !== CAMPAIGN_KEY) return;
 
-    // Every missed-status event feeds the "Missed calls" hero metric, whether
-    // or not Retreaver ever picked a target. NOTSOLD_S ⊂ MISSED_S, and
-    // MISSED_S statuses never reach the routed-call counting below, so this
-    // can't double-count against the totTotal-based remainder.
-    if (MISSED_S.has(s)) { totMissedEvents++; call._missed = true; }
+    // Tag every missed-status call (not-open / no-target / no-answer /
+    // rejected), whether or not Retreaver ever picked a target. The Missed
+    // metric + panel both come from these tags, deduped by caller number.
+    if (MISSED_S.has(s)) call._missed = true;
 
     if (NOTSOLD_S.has(s)) {
       const callerTotal = callerCount[call.caller] || 1;
@@ -1069,13 +1067,11 @@ function processCalls(calls, start, end) {
 
   // Answer rate = answered / total calls routed (matches Wolpert)
   const rate = totTotal ? Math.round((totAnswered/totTotal)*100) : 0;
-  // Missed = every call that never connected to an agent (2026-06-11):
-  //   1. missed-status events (not-open / no-target / no-answer / rejected) —
-  //      counted per event in totMissedEvents, and
-  //   2. routed calls that ended unanswered (the totTotal remainder).
-  // Note: Missed now includes calls outside totTotal, so Total no longer
-  // decomposes as Answered + Missed + Live.
-  const totMissed = Math.max(0, totTotal - totAnswered - totLive) + totMissedEvents;
+  // Missed = UNIQUE caller numbers that never connected to an agent
+  // (2026-06-11): missed-status calls (not-open / no-target / no-answer /
+  // rejected) plus routed-but-unanswered calls, deduped by number — a caller
+  // who retried 4× counts once. Matches the Missed calls panel exactly.
+  const totMissed = new Set(calls.filter(c => c._missed).map(c => c.caller || c.uuid)).size;
 
   // ─── Callback cross-reference ──────────────────────────────────────────────
   // For each inbound call, was the same caller_number dialed back from Dialpad
