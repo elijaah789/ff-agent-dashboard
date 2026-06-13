@@ -96,6 +96,9 @@
   .dp-available .dot { background:var(--accent); animation:breathe 2s ease-in-out infinite; }
   .dp-unavailable { background:rgba(239,68,68,0.1);  color:var(--red);    border:1px solid rgba(239,68,68,0.2); }
   .dp-unavailable .dot { background:var(--red); }
+  /* Online in Dialpad but can't take a call (target paused: daily cap or manual hold) */
+  .dp-capped      { background:rgba(245,158,11,0.1); color:var(--amber);  border:1px solid rgba(245,158,11,0.2); }
+  .dp-capped .dot { background:var(--amber); }
   .dp-unknown     { background:rgba(255,255,255,0.05); color:var(--muted); border:1px solid var(--border); }
   .dp-unknown .dot { background:var(--muted); }
 
@@ -777,7 +780,13 @@ async function fetchDialpadStatuses() {
             dpDebug += `    SKIP — admin override active (${manualOverrides[target.targetId]}) for target ${target.targetId}\n`;
             return;
           }
-          retreaverPauses.push({ targetId: target.targetId, name: target.name, shouldPause: !isAvailable, phone });
+          // PAUSE-ONLY from the browser. Unpausing is the worker cron's job — it
+          // knows daily-cap counts and overrides; a browser unpause here used to
+          // re-open capped agents every refresh (cap leak + pause/unpause flap).
+          if (isAvailable) return;
+          const capInfo = targetCaps[target.targetId];
+          if (capInfo && capInfo.paused) return; // already paused — don't spam the API
+          retreaverPauses.push({ targetId: target.targetId, name: target.name, shouldPause: true, phone });
         }
       });
     });
@@ -842,6 +851,23 @@ function normalizePhone(p) {
   return digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
 }
 
+// Effective routability for a presence pill. Green ONLY when the agent can
+// actually receive a call: Dialpad-available AND Retreaver target unpaused.
+// The cron folds caps + holds into target.paused, so a green Dialpad dot with
+// a paused target means Capped (daily cap) or Held (manual override) — amber.
+// This keeps the pills consistent with the "N available" badges.
+function effectiveState(a) {
+  if (a.status !== 'available') return { cls: 'dp-pill dp-unavailable', label: 'Unavailable' };
+  const tgt = a.phone ? phoneToTarget[a.phone] : null;
+  const cap = tgt ? targetCaps[tgt.targetId] : null;
+  if (cap && cap.paused) {
+    if (manualOverrides[tgt.targetId] === 'paused') return { cls: 'dp-pill dp-capped', label: 'Held' };
+    if (cap.daily != null) return { cls: 'dp-pill dp-capped', label: 'Capped' };
+    return { cls: 'dp-pill dp-capped', label: 'Paused' };
+  }
+  return { cls: 'dp-pill dp-available', label: 'Available' };
+}
+
 function updateDialpadBar() {
   const bar    = document.getElementById('dialpadBar');
   const agents = document.getElementById('dialpadAgents');
@@ -858,9 +884,8 @@ function updateDialpadBar() {
   if (entries.length === 0) { bar.classList.remove('active'); return; }
   bar.classList.add('active');
   agents.innerHTML = entries.map(a => {
-    const cls   = a.status === 'available' ? 'dp-pill dp-available' : 'dp-pill dp-unavailable';
-    const label = a.status === 'available' ? 'Available' : 'Unavailable';
-    return `<span class="${cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${label}</span>`;
+    const st = effectiveState(a);
+    return `<span class="${st.cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${st.label}</span>`;
   }).join('');
 }
 
@@ -880,15 +905,14 @@ function updateEternaBar() {
   renderAvailability();
   if (entries.length === 0) { bar.classList.remove('active'); return; }
   bar.classList.add('active');
-  // Available first, then alphabetical — keeps the larger Eterna roster scannable.
-  entries.sort((a,b) => a.status === b.status
-    ? String(a.name).localeCompare(String(b.name))
-    : (a.status === 'available' ? -1 : 1));
-  agents.innerHTML = entries.map(a => {
-    const cls   = a.status === 'available' ? 'dp-pill dp-available' : 'dp-pill dp-unavailable';
-    const label = a.status === 'available' ? 'Available' : 'Unavailable';
-    return `<span class="${cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${label}</span>`;
-  }).join('');
+  // Truly-available first, then capped/held, then unavailable; alphabetical within.
+  const stOrder = { 'Available': 0, 'Capped': 1, 'Held': 1, 'Paused': 1, 'Unavailable': 2 };
+  const decorated = entries.map(a => ({ a, st: effectiveState(a) }));
+  decorated.sort((x,y) => (stOrder[x.st.label] ?? 1) - (stOrder[y.st.label] ?? 1)
+    || String(x.a.name).localeCompare(String(y.a.name)));
+  agents.innerHTML = decorated.map(({a, st}) =>
+    `<span class="${st.cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${st.label}</span>`
+  ).join('');
 }
 
 // ─── Agents available to take a call ────────────────────────────────────────
@@ -1216,7 +1240,12 @@ function renderTable() {
     if (!dp) {
       dpPill = `<span class="dp-pill dp-unknown"><span class="dot"></span>—</span>`;
     } else if (dp.status === 'available') {
-      dpPill = `<span class="dp-pill dp-available"><span class="dot"></span>Yes</span>`;
+      // Green "Yes" only when the call can actually route (target unpaused);
+      // amber Capped/Held when online in Dialpad but the target is paused.
+      const st = effectiveState({ status: dp.status, phone: dp.phone || a.dialedNumber });
+      dpPill = st.label === 'Available'
+        ? `<span class="dp-pill dp-available"><span class="dot"></span>Yes</span>`
+        : `<span class="${st.cls}"><span class="dot"></span>${st.label}</span>`;
     } else {
       dpPill = `<span class="dp-pill dp-unavailable"><span class="dot"></span>No</span>`;
       rowVariant = ' dnd-row';
@@ -1823,6 +1852,9 @@ async function fetchTargetCaps() {
     }
     console.log('Target caps loaded:', Object.keys(targetCaps).length);
     renderAvailability();
+    // Re-render presence strips — pills depend on targetCaps for Capped/Held state
+    updateDialpadBar();
+    updateEternaBar();
   } catch(e) {
     console.warn('Could not fetch target caps:', e.message);
   }
