@@ -1656,7 +1656,12 @@ function capCell(a) {
   if (cap.daily === null) {
     return `<span class="vm editable-val" onclick="event.stopPropagation();promptCap(${tid})" title="Click to set cap" style="cursor:pointer;">∞</span>`;
   }
-  const used = a.receivable;
+  // Retreaver is the source of truth for the daily-cap count: show its native
+  // Daily cap `filled` (conversion-driven), NOT the dashboard's own receivable
+  // tally — the two diverge (different reset window + count basis) and the team
+  // manages caps off Retreaver. `dailyFilled` comes straight from the target's
+  // caps[] in /retreaver/targets (see targetCaps build).
+  const used = cap.dailyFilled;
   const limit = cap.daily;
   const pct = Math.round((used / limit) * 100);
   const cls = pct >= 90 ? 'vr' : pct >= 70 ? 'va' : 'vg';
