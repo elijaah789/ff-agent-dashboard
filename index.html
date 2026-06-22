@@ -507,6 +507,15 @@ const KEEP_ETERNA = [
   ['kimone','fullerton'], ['megan','rivera'], ['steven','gold'],
   ['chrystyan','nodarse'], ['liodey','sanchez'], ['lio','sanchez'],
   ['sterling','harrell'], ['anthony','cerrone'],
+  // 2026-06-22 batch — Dialpad display_name spelling (e.g. 'alexander' not 'alex',
+  // 'gigi' is single-token in Dialpad, 'erick'+'alicea' from "Erick Acosta Alicea")
+  ['alexander','boone'], ['ashleigh','fehr'], ['chaz','chandler'],
+  ['dashawn','currington'], ['elijah','lowe'], ['elijah','nobles'],
+  ['eric','walker'], ['erick','alicea'], ['joel','gonzalez'],
+  ['laniesha','britt'], ['michelle','perez'], ['allyson','corbin'],
+  ['brenton','budhoo'], ['gigi','salazar'], ['lavelle','yancey'],
+  ['marcus','turner'], ['savon','robinson'], ['troy','thaxton'],
+  ['winston','clarke'],
 ];
 function isKeepEterna(name) {
   const toks = String(name || '').toLowerCase().replace(/[^a-z ]/g,' ').split(/\s+/).filter(Boolean);
