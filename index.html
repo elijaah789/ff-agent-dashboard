@@ -1380,7 +1380,11 @@ function buildDetailTable(a) {
     const cs   = (c.status || '').toLowerCase();
     const isAns  = ANSWERED_S.has(cs);
     const isLive = LIVE_S.has(cs);
-    const isRec  = (c.receivable === true || c.receivable === 'true') && c.duration >= 60;
+    // Receivable = the SAME 60s-threshold rule the caps + agent-table column use
+    // (answered & dur>=60). Retreaver's raw `receivable` flag is false on every
+    // call on this account (internal agent routes, not buyer-billable), so gating
+    // the per-call display on it wrongly showed 0 while caps showed 3+. See L1090.
+    const isRec  = isAns && c.duration >= 60;
     const statusCls = isLive ? 'vb' : isAns ? 'vg' : 'vm';
     const statusLbl = isLive ? 'Live' : isAns ? 'Answered' : (missedLbl(c.status) || 'missed');
     const recLbl  = isRec ? '<span class="vg">Yes</span>' : '<span class="vm">No</span>';
