@@ -565,7 +565,17 @@ async function authedFetch(path, init) {
     'X-Dash-Pass': DASH_PASS,
     'X-Spend-Pass': SPEND_PASS,
   });
-  const res = await fetch(WORKER_URL + path, Object.assign({}, opts, { headers }));
+  // Hard client-side timeout so a stalled worker/upstream can never freeze the UI
+  // indefinitely. Set above the worker's own ~20s timeout+retry ceiling so we don't
+  // abort a valid in-flight retry. On abort, fetch() throws AbortError → caller retries.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 25000);
+  let res;
+  try {
+    res = await fetch(WORKER_URL + path, Object.assign({}, opts, { headers, signal: ctl.signal }));
+  } finally {
+    clearTimeout(timer);
+  }
   if (res.status === 401) {
     localStorage.removeItem('ff_pass');
     showPassGate(false);
@@ -690,14 +700,32 @@ async function fetchAllPages() {
   const prog = document.getElementById('prog');
   prog.style.display = 'block';
 
-  let all = [], page = 1;
+  let all = [], page = 1, partial = false;
   const startMs = new Date(start + 'T00:00:00').getTime();
   const endMs   = new Date(end   + 'T23:59:59').getTime();
+  const TRANSIENT = [429, 500, 502, 503, 504];
 
   while (page <= 200) {
     prog.textContent = `Loading page ${page}... (${all.length.toLocaleString()} calls so far)`;
-    const res = await authedFetch(`/retreaver/calls?start=${apiStart}&end=${apiEnd}&page=${page}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status} on page ${page}`);
+    // Per-page retry with backoff: a transient upstream 502 (Retreaver stall) or a
+    // client timeout must NOT blank the whole dashboard. Retry the page a few times,
+    // then degrade — keep whatever pages already loaded rather than throwing.
+    let res = null, lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await authedFetch(`/retreaver/calls?start=${apiStart}&end=${apiEnd}&page=${page}`);
+        if (res.ok || !TRANSIENT.includes(res.status)) break;  // success, or a non-retryable status
+      } catch (e) { lastErr = e; res = null; }                  // network error / abort → retry
+      if (attempt < 2) {
+        prog.textContent = `Retrying page ${page} (attempt ${attempt + 2}/3)...`;
+        await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+      }
+    }
+    if (!res || !res.ok) {
+      if (all.length > 0) { partial = true; break; }            // degrade: render what we have
+      throw new Error(res ? `HTTP ${res.status} on page ${page}`
+                          : `Network error on page ${page}: ${(lastErr && lastErr.message) || 'timeout'}`);
+    }
 
     const text = await res.text();
     if (page === 1) document.getElementById('rawBox').textContent = text.slice(0, 6000);
@@ -725,9 +753,10 @@ async function fetchAllPages() {
 
   prog.style.display = 'none';
   document.getElementById('pageInfo').textContent =
-    `${all.length.toLocaleString()} calls · ${page} pages fetched`;
+    `${all.length.toLocaleString()} calls · ${page} pages fetched` +
+    (partial ? ' · ⚠ partial (upstream stalled — auto-refresh will retry)' : '');
 
-  return { calls: all, start, end };
+  return { calls: all, start, end, partial };
 }
 
 // ─── Retreaver: pause / unpause one target ───────────────────────────────────
