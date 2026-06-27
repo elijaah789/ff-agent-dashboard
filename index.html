@@ -1091,6 +1091,16 @@ function processCalls(calls, start, end) {
     if (ANSWERED_S.has(s) && dur >= 600) { a.longCalls++; totLongCalls++; }
   });
 
+  // Per-NUMBER missed de-dup: if a caller EVER connected to an agent in this window
+  // (answered or live, BEFORE or AFTER the miss), they're a real customer — strip the
+  // missed tag from all of their calls so they leave the Missed metric + panel entirely.
+  const _everConnected = new Set();
+  calls.forEach(c => {
+    const cs = (c.status || '').toLowerCase().trim();
+    if ((ANSWERED_S.has(cs) || LIVE_S.has(cs)) && c.caller) _everConnected.add(c.caller);
+  });
+  calls.forEach(c => { if (c._missed && c.caller && _everConnected.has(c.caller)) c._missed = false; });
+
   // TRUE daily unique = distinct caller numbers across the whole window (not the
   // per-agent sum, which double-counts a caller that round-robin sent to 2 agents).
   totUnique = uniqueCallers.size;
