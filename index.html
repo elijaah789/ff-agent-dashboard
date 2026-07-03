@@ -338,6 +338,11 @@
         <div class="mv g" id="mCPL">—</div>
         <div class="ss-sub">spend ÷ unique calls · selected range</div>
       </div>
+      <div class="mc p">
+        <div class="ml">Cost / receivable call</div>
+        <div class="mv p" id="mCPR">—</div>
+        <div class="ss-sub">spend ÷ receivable calls · selected range</div>
+      </div>
     </div>
   </div>
 
@@ -481,6 +486,7 @@ let dialpadOutbound = []; // raw outbound dials from /dialpad/calls?direction=ou
 let totCallbacks = 0;
 let eternaData      = null; // /dialpad/eterna-agents response (account 2 ring-group attribution)
 let lastUniqueCalls = null; // latest unique-calls count from processCalls — for CPL
+let lastReceivableCalls = null; // latest receivable count (answered & ≥60s) from processCalls — for cost/receivable
 let lastRangeSpend  = null; // latest selected-range Google Ads spend — for CPL
 
 // ─── Conversion tracker state (answered → closed) ──────────────────────────────
@@ -1193,7 +1199,7 @@ function processCalls(calls, start, end) {
 
   document.getElementById('mTotal').textContent      = totTotal.toLocaleString();
   document.getElementById('mUnique').textContent     = totUnique.toLocaleString();
-  lastUniqueCalls = totUnique; renderCPL(); // feed CPL = ad spend ÷ unique calls
+  lastUniqueCalls = totUnique; lastReceivableCalls = totReceivable; renderCPL(); // feed CPL (spend÷unique) + cost/receivable (spend÷receivable)
   document.getElementById('mAnswered').textContent   = totAnswered.toLocaleString();
   document.getElementById('mReceivable').textContent = totReceivable.toLocaleString();
   document.getElementById('mNotSold').textContent    = totNotSold.toLocaleString();
@@ -2068,13 +2074,20 @@ function setCohortCells(prefix, c, uniq) {
   set(prefix+'Answered', c.a); set(prefix+'Missed', Math.max(0, c.t - c.a - c.lv));
   set(prefix+'Receivable', c.r); set(prefix+'Long', c.l);
 }
-// CPL = Google Ads spend (selected range) ÷ unique calls (selected range). Both
-// load async (processCalls + loadAdSpend), so each calls this; renders once both ready.
+// CPL = Google Ads spend (selected range) ÷ unique calls (selected range), and
+// cost/receivable = same spend ÷ receivable calls (answered & ≥60s). All load
+// async (processCalls + loadAdSpend), so each calls this; renders once both ready.
 function renderCPL() {
   const el = document.getElementById('mCPL');
-  if (!el) return;
-  if (lastRangeSpend == null || lastUniqueCalls == null || !lastUniqueCalls) { el.textContent = '—'; return; }
-  el.textContent = fmtUSD(lastRangeSpend / lastUniqueCalls);
+  if (el) {
+    if (lastRangeSpend == null || lastUniqueCalls == null || !lastUniqueCalls) el.textContent = '—';
+    else el.textContent = fmtUSD(lastRangeSpend / lastUniqueCalls);
+  }
+  const cpr = document.getElementById('mCPR');
+  if (cpr) {
+    if (lastRangeSpend == null || lastReceivableCalls == null || !lastReceivableCalls) cpr.textContent = '—';
+    else cpr.textContent = fmtUSD(lastRangeSpend / lastReceivableCalls);
+  }
 }
 // ─── Spend password (second tier) ────────────────────────────────────────────
 // Ad-spend numbers need their own password on top of the dashboard one. Stored
