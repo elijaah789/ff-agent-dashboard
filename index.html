@@ -241,11 +241,6 @@
     <div class="dsb-agents" id="dialpadAgents"></div>
   </div>
 
-  <div class="dialpad-status-bar" id="eternaBar">
-    <div class="dsb-title">Eterna agent availability (Dialpad)<span class="avail-badge" id="etAvailBadge"></span></div>
-    <div class="dsb-agents" id="eternaAgents"></div>
-  </div>
-
   <div class="hero">
     <div class="mc">  <div class="ml">Total calls</div>  <div class="mv"   id="mTotal">—</div></div>
     <div class="mc g"><div class="ml">Unique calls</div>  <div class="mv g" id="mUnique">—</div></div>
@@ -501,38 +496,6 @@ let convDealsByAgent   = {};   // {agentName: {count, premium}} closing-agent ro
 const phoneToTarget = {};
 const targetCaps    = {};
 const dialpadStatus = {};
-const eternaStatus  = {}; // 2nd Dialpad account (Eterna, DIALPAD_BEARER_2) presence — DISPLAY ONLY, no auto-pause
-
-// ─── Eterna roster whitelist ────────────────────────────────────────────────
-// Kept Eterna agents (9 from 2026-06-03 + 4 added 2026-06-08 = 13). The other
-// 15 trimmed Retreaver targets were hard-deleted; their Dialpad users still
-// exist on the Eterna account, so the availability strip is filtered to this
-// list. isKeepEterna matches the Dialpad display_name (line ~723), so entries
-// use the Dialpad spelling (e.g. 'liodey' not 'lio', 'sterling' not 'steeling').
-const KEEP_ETERNA = [
-  ['allan','kavelish'], ['elora','dasilva'], ['irving','correa'],
-  ['jasmine','rodriguez'], ['jordan','little'], ['kevin','mccrea'],
-  ['kimone','fullerton'], ['megan','rivera'], ['steven','gold'],
-  ['chrystyan','nodarse'], ['liodey','sanchez'], ['lio','sanchez'],
-  ['sterling','harrell'], ['anthony','cerrone'],
-  // 2026-06-22 batch — Dialpad display_name spelling (e.g. 'alexander' not 'alex',
-  // 'gigi' is single-token in Dialpad, 'erick'+'alicea' from "Erick Acosta Alicea")
-  ['alexander','boone'], ['ashleigh','fehr'], ['chaz','chandler'],
-  ['dashawn','currington'], ['elijah','lowe'], ['elijah','nobles'],
-  ['eric','walker'], ['erick','alicea'], ['joel','gonzalez'],
-  ['laniesha','britt'], ['michelle','perez'], ['allyson','corbin'],
-  ['brenton','budhoo'], ['gigi','salazar'], ['lavelle','yancey'],
-  ['marcus','turner'], ['savon','robinson'], ['troy','thaxton'],
-  ['winston','clarke'],
-];
-function isKeepEterna(name) {
-  const toks = String(name || '').toLowerCase().replace(/[^a-z ]/g,' ').split(/\s+/).filter(Boolean);
-  if (!toks.length) return false;
-  return KEEP_ETERNA.some(([f,l]) =>
-    (toks.includes(f) && toks.includes(l)) ||   // full first+last match
-    (toks.length === 1 && toks[0] === f)         // Dialpad shows first name only
-  );
-}
 const dialpadUserIdToName = {}; // populated from /dialpad/users — Dialpad user id → display name (for outbound attribution)
 const targetIdToName = {};   // populated from /retreaver/targets — call.system_target_id → target.name
 const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
@@ -848,39 +811,7 @@ async function fetchDialpadStatuses() {
     dpDebug += `  Status summary: ${JSON.stringify(summary)}\n`;
     dpDebug += `  Mapped to Retreaver: ${retreaverPauses.length} agents\n`;
 
-    // ─── Eterna (2nd Dialpad account, DIALPAD_BEARER_2) presence — DISPLAY ONLY ───
-    // These users have no display_name; their 949 numbers match the Retreaver 949
-    // targets, so label pills by phone→target name. No auto-pause here — the worker
-    // cron (which polls both accounts) and manual control own Eterna pause state.
-    try {
-      Object.keys(eternaStatus).forEach(k => delete eternaStatus[k]);
-      const eRes = await authedFetch('/dialpad/eterna-users');
-      if (eRes.ok) {
-        const eJson  = await eRes.json();
-        const eUsers = eJson.users || eJson.items || (Array.isArray(eJson) ? eJson : []);
-        eUsers.forEach(user => {
-          const phones = (user.phone_numbers || []).map(p =>
-            normalizePhone(typeof p === 'object' ? (p.number || p.value || '') : p)
-          ).filter(Boolean);
-          const status  = user.is_available === true ? 'available' : 'unavailable';
-          const primary = phones[0] || '';
-          const dpName  = user.display_name || `${user.first_name||''} ${user.last_name||''}`.trim();
-          const tgt     = primary ? phoneToTarget[primary] : null;
-          const name    = dpName || (tgt ? tgt.name : '') || (primary ? `+1${primary}` : '');
-          const entry   = { name, status, userId: user.id, phone: primary, cohort: 'eterna' };
-          if (user.id) eternaStatus['id:' + user.id] = entry;
-          phones.forEach(phone => { eternaStatus[phone] = entry; });
-        });
-      } else {
-        dpDebug += `  Eterna users HTTP ${eRes.status}\n`;
-      }
-      dpDebug += `  Eterna presence entries: ${new Set(Object.values(eternaStatus).map(e=>e.userId)).size}\n`;
-    } catch (e) {
-      dpDebug += `  Eterna presence FATAL: ${e.message}\n`;
-    }
-
     updateDialpadBar();
-    updateEternaBar();
     renderTable();
 
   } catch(e) {
@@ -935,45 +866,19 @@ function updateDialpadBar() {
   }).join('');
 }
 
-function updateEternaBar() {
-  const bar    = document.getElementById('eternaBar');
-  const agents = document.getElementById('eternaAgents');
-  if (!bar || !agents) return;
-  // eternaStatus is keyed by 'id:<userId>' AND each phone → dedupe by userId.
-  const seen = new Set();
-  const entries = Object.values(eternaStatus).filter(a => {
-    if (!isKeepEterna(a.name)) return false;   // only the 9 kept Eterna agents
-    const key = a.userId || a.name || a.phone;
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  renderAvailability();
-  if (entries.length === 0) { bar.classList.remove('active'); return; }
-  bar.classList.add('active');
-  // Truly-available first, then capped/held, then unavailable; alphabetical within.
-  const stOrder = { 'Available': 0, 'Capped': 1, 'Held': 1, 'Paused': 1, 'Unavailable': 2 };
-  const decorated = entries.map(a => ({ a, st: effectiveState(a) }));
-  decorated.sort((x,y) => (stOrder[x.st.label] ?? 1) - (stOrder[y.st.label] ?? 1)
-    || String(x.a.name).localeCompare(String(y.a.name)));
-  agents.innerHTML = decorated.map(({a, st}) =>
-    `<span class="${st.cls}"><span class="dot"></span>${esc(a.name || a.phone)} — ${st.label}</span>`
-  ).join('');
-}
-
 // ─── Agents available to take a call ────────────────────────────────────────
 // An agent can take a call when its Retreaver target is NOT paused. The worker
 // cron folds every "can't take a call" reason — Dialpad unavailable, HELD
 // (manual override pause), and CAPPED (hit daily 60s-call cap) — into the
 // target.paused flag every minute, so a single `!paused` check covers them all.
-// Counted off the live target roster (deleted agents are already gone), split
-// FF vs Eterna by DID area code (949 / 407 ring-all = Eterna, else FF).
+// Counted off the live target roster (deleted agents are already gone). The
+// Eterna buyer line (+18587422352, always unpaused) is kept out of the FF badge.
 function computeAvailability() {
   let ff = 0, et = 0;
   Object.keys(targetCaps).forEach(id => {
     if (targetCaps[id].paused) return;                 // paused / HELD / CAPPED / unavailable
     const d = String(targetIdToPhone[id] || '').replace(/\D/g,'').slice(-10);
-    if (d.slice(0,3) === '949' || d === '4077320913') et++; else ff++;
+    if (d === '8587422352' || d.slice(0,3) === '949') et++; else ff++;
   });
   return { ff, et, overall: ff + et };
 }
@@ -988,7 +893,6 @@ function renderAvailability() {
     el.className = 'avail-badge on' + (n === 0 ? ' zero' : '');
   };
   setBadge('ffAvailBadge', a.ff);
-  setBadge('etAvailBadge', a.et);
 }
 
 // ─── Process Retreaver calls ──────────────────────────────────────────────────
@@ -1000,8 +904,9 @@ function processCalls(calls, start, end) {
   const notSoldSeen = new Set(); // dedupe by caller number
   const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
   const uniqueFF = new Set(), uniqueEterna = new Set(); // per-cohort distinct callers
-  // Cohort by phone area code: 949 (Eterna agents) + 407 133189 ring-all = Eterna; everything else (435) = FF.
-  const cohortOf = (num) => { const d = String(num||'').replace(/\D/g,'').slice(-10); return (d.slice(0,3) === '949' || d === '4077320913') ? 'eterna' : 'ff'; };
+  // Cohort by phone: the Eterna buyer line +18587422352 (target 139820) = Eterna
+  // (individual 949 agent targets all deleted 2026-07-13); everything else (435 FF agents) = FF.
+  const cohortOf = (num) => { const d = String(num||'').replace(/\D/g,'').slice(-10); return (d === '8587422352' || d.slice(0,3) === '949') ? 'eterna' : 'ff'; };
 
   const callerCount = {};
   calls.forEach(call => {
@@ -1278,7 +1183,7 @@ function renderTable() {
                  : rate>=50?`<span class="badge ba">Moderate</span>`
                  :           `<span class="badge br">Low</span>`;
 
-    let dp = dialpadStatus[a.dialedNumber] || eternaStatus[a.dialedNumber];
+    let dp = dialpadStatus[a.dialedNumber];
     if (!dp) {
       const nameKey = a.name.toLowerCase().replace(/[^a-z]/g,'');
       dp = dialpadStatus[nameKey] || null;
@@ -1941,9 +1846,8 @@ async function fetchTargetCaps() {
     }
     console.log('Target caps loaded:', Object.keys(targetCaps).length);
     renderAvailability();
-    // Re-render presence strips — pills depend on targetCaps for Capped/Held state
+    // Re-render presence strip — pills depend on targetCaps for Capped/Held state
     updateDialpadBar();
-    updateEternaBar();
   } catch(e) {
     console.warn('Could not fetch target caps:', e.message);
   }
