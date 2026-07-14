@@ -101,6 +101,9 @@
   .dp-capped .dot { background:var(--amber); }
   .dp-unknown     { background:rgba(255,255,255,0.05); color:var(--muted); border:1px solid var(--border); }
   .dp-unknown .dot { background:var(--muted); }
+  /* Dialpad DND forced on — distinct from plain offline so it's obviously undoable */
+  .dp-dnd         { background:rgba(167,139,250,0.12); color:#a78bfa; border:1px solid rgba(167,139,250,0.3); }
+  .dp-dnd .dot    { background:#a78bfa; }
 
   /* Admin override mini-button — stacks below Available pill */
   .avail-cell { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
@@ -112,6 +115,7 @@
   .ovr-mini.active { color:var(--accent); border-color:rgba(0,229,160,0.4); background:rgba(0,229,160,0.08); opacity:1; }
   .ovr-mini .x { color:var(--muted); margin-left:2px; cursor:pointer; padding:0 2px; }
   .ovr-mini .x:hover { color:var(--red); }
+  .ovr-mini.dnd-on { color:#a78bfa; border-color:rgba(167,139,250,0.4); background:rgba(167,139,250,0.08); opacity:1; }
 
   .editable-val { cursor:pointer; border-bottom:1px dashed rgba(255,255,255,0.2); padding-bottom:1px; transition:border-color 0.15s; }
   .editable-val:hover { border-bottom-color:var(--accent); }
@@ -477,7 +481,10 @@ let notSoldCount = 0;
 let notSoldCalls = []; // per-call details for the Not-sold expandable row
 let countdown    = REFRESH;
 let timer        = null;
+let fetchInFlight = false; // reentrancy guard — overlapping fetchData calls no-op
+let fetchGen      = 0;     // bumped per fetchData — stale fire-and-forget callbacks no-op
 let dialpadOutbound = []; // raw outbound dials from /dialpad/calls?direction=outbound
+let dialpadOutboundLoaded = false; // false = feed failed/not loaded yet → CALLBACKS renders '—' not 0
 let totCallbacks = 0;
 let eternaData      = null; // /dialpad/eterna-agents response (account 2 ring-group attribution)
 let lastUniqueCalls = null; // latest unique-calls count from processCalls — for CPL
@@ -672,6 +679,7 @@ async function fetchAllPages() {
   prog.style.display = 'block';
 
   let all = [], page = 1, partial = false;
+  const seenKeys = new Set(); // dedupe across pages — live pagination shift / mixed fresh+snapshot pages repeat rows
   const startMs = new Date(start + 'T00:00:00').getTime();
   const endMs   = new Date(end   + 'T23:59:59').getTime();
   const TRANSIENT = [429, 500, 502, 503, 504];
@@ -708,6 +716,13 @@ async function fetchAllPages() {
     if (calls.length === 0) break;
 
     const filtered = calls.filter(c => {
+      // Skip rows already seen on an earlier page (calls shift pages between
+      // fetches; outage fallback can mix fresh + last-good snapshot pages).
+      const key = c.uuid || ((c.caller || c.start_time) ? `${c.caller || ''}|${c.start_time || ''}` : null);
+      if (key) {
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+      }
       if (!c.start_time) return true;
       const t = new Date(c.start_time).getTime();
       return t >= startMs && t <= endMs;
@@ -774,13 +789,14 @@ async function fetchDialpadStatuses() {
 
       const isAvailable = user.is_available === true;
       const dpStatusVal = isAvailable ? 'available' : 'unavailable';
+      const dnd = user.do_not_disturb === true;
       const name = user.display_name || `${user.first_name||''} ${user.last_name||''}`.trim();
       const nameKey = name.toLowerCase().replace(/[^a-z]/g,'');
 
       if (user.id && name) dialpadUserIdToName[String(user.id)] = name;
-      dialpadStatus[nameKey] = { name, status: dpStatusVal, userId: user.id, phone: phones[0]||'' };
+      dialpadStatus[nameKey] = { name, status: dpStatusVal, userId: user.id, phone: phones[0]||'', dnd };
       phones.forEach(phone => {
-        dialpadStatus[phone] = { name, status: dpStatusVal, userId: user.id, phone };
+        dialpadStatus[phone] = { name, status: dpStatusVal, userId: user.id, phone, dnd };
         dpDebug += `    ${phone} -> ${name} (${dpStatusVal})\n`;
         const target = phoneToTarget[phone];
         if (target) {
@@ -896,7 +912,7 @@ function renderAvailability() {
 }
 
 // ─── Process Retreaver calls ──────────────────────────────────────────────────
-function processCalls(calls, start, end) {
+function processCalls(calls, start, end, opts) {
   const agents     = {};
   const statusCount= {};
   let totTotal=0, totUnique=0, totAnswered=0, totReceivable=0, totLongCalls=0, totNotSold=0, totLive=0;
@@ -925,7 +941,9 @@ function processCalls(calls, start, end) {
       phoneToTarget[phone] = { targetId: sysId, name: agent };
     }
 
-    if (CAMPAIGN_KEY && call.system_campaign_id && call.campaign_key && call.campaign_key !== CAMPAIGN_KEY) return;
+    // Retreaver exposes the campaign key hex as `cid` (never `campaign_key`);
+    // stay permissive when the field is absent.
+    if (CAMPAIGN_KEY && call.cid && call.cid !== CAMPAIGN_KEY) return;
 
     // Tag every missed-status call (not-open / no-target / no-answer /
     // rejected), whether or not Retreaver ever picked a target. The Missed
@@ -1014,6 +1032,19 @@ function processCalls(calls, start, end) {
   });
   calls.forEach(c => { if (c._missed && c.caller && _everConnected.has(c.caller)) c._missed = false; });
 
+  // Per-cohort missed — same _missed-tagged, caller-deduped set the hero MISSED
+  // card uses. Each caller is assigned to exactly ONE cohort (their most recent
+  // missed call's line) so ffMissed + etMissed always equals the hero total,
+  // even for a caller who missed on both an FF and an Eterna number.
+  const missedByCoh = { ff: new Set(), eterna: new Set() };
+  const _missedCohort = new Map();
+  calls.forEach(c => {
+    if (!c._missed) return;
+    const k = c.caller || c.uuid;
+    if (!_missedCohort.has(k)) _missedCohort.set(k, cohortOf(c.dialed_number) === 'eterna' ? 'eterna' : 'ff');
+  });
+  _missedCohort.forEach((coh, k) => missedByCoh[coh].add(k));
+
   // TRUE daily unique = distinct caller numbers across the whole window (not the
   // per-agent sum, which double-counts a caller that round-robin sent to 2 agents).
   totUnique = uniqueCallers.size;
@@ -1045,8 +1076,8 @@ function processCalls(calls, start, end) {
   // Per-cohort rollups (FF vs Eterna) for the cohort-breakdown strip
   const _coh = { ff:{t:0,a:0,r:0,l:0,lv:0}, eterna:{t:0,a:0,r:0,l:0,lv:0} };
   allAgents.forEach(a => { const c = _coh[a.cohort==='eterna'?'eterna':'ff']; c.t+=a.total; c.a+=a.answered; c.r+=a.receivable; c.l+=a.longCalls; c.lv+=a.live; });
-  setCohortCells('ff', _coh.ff, uniqueFF.size);
-  setCohortCells('et', _coh.eterna, uniqueEterna.size);
+  setCohortCells('ff', _coh.ff, uniqueFF.size, missedByCoh.ff.size);
+  setCohortCells('et', _coh.eterna, uniqueEterna.size, missedByCoh.eterna.size);
 
   notSoldCount = totNotSold;
 
@@ -1084,21 +1115,16 @@ function processCalls(calls, start, end) {
   // Each Dialpad outbound record carries the dialing agent. Field shape varies
   // by API version: try nested target.{id,name}, flat target_id/target_name,
   // and fall back to dialpadUserIdToName lookup. Match Dialpad name to
-  // Retreaver agent name with the same fuzzy check used by the presence pill.
+  // Retreaver agent name via fuzzyNameMatch (exact full name first; fuzzy
+  // fallback needs BOTH first + last tokens, so two same-first-name agents
+  // never swap credit).
   dialpadOutbound.forEach(o => {
     const tgtId   = (o.target && o.target.id) || o.target_id || null;
     const tgtName = (o.target && o.target.name) || o.target_name
                    || (tgtId != null ? dialpadUserIdToName[String(tgtId)] : null)
                    || '';
     if (!tgtName) return;
-    const dpLower = tgtName.toLowerCase();
-    const match = Object.values(agents).find(a => {
-      const an = a.name.toLowerCase();
-      if (an === dpLower) return true;
-      const anParts = an.split(' ').filter(p => p.length > 2);
-      const dpParts = dpLower.split(' ').filter(p => p.length > 2);
-      return anParts.some(p => dpLower.includes(p)) || dpParts.some(p => an.includes(p));
-    });
+    const match = Object.values(agents).find(a => fuzzyNameMatch(a.name, tgtName));
     if (match) match.outbound++;
   });
 
@@ -1111,7 +1137,7 @@ function processCalls(calls, start, end) {
   document.getElementById('mLongCalls').textContent  = totLongCalls.toLocaleString();
   document.getElementById('mLive').textContent       = totLive.toLocaleString();
   document.getElementById('mMissed').textContent     = totMissed.toLocaleString();
-  document.getElementById('mCallbacks').textContent  = totCallbacks.toLocaleString();
+  document.getElementById('mCallbacks').textContent  = dialpadOutboundLoaded ? totCallbacks.toLocaleString() : '—'; // '—' = outbound feed not loaded (unknown), not a real zero
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
@@ -1156,7 +1182,9 @@ ${top5}
 SAMPLE: status=${sample.status} tid=${sample.tid} receivable=${sample.receivable} (type=${typeof sample.receivable}) dur=${sample.total_duration}`;
 
   renderTable();
-  fetchDialpadStatuses();
+  // The outbound-resolve re-render passes skipStatuses — without it, every refresh
+  // would run the Dialpad presence pull + Retreaver pause-PUT reconciliation twice.
+  if (!(opts && opts.skipStatuses)) fetchDialpadStatuses();
 }
 
 // ─── Render table ─────────────────────────────────────────────────────────────
@@ -1207,6 +1235,10 @@ function renderTable() {
       dpPill = st.label === 'Available'
         ? `<span class="dp-pill dp-available"><span class="dot"></span>Yes</span>`
         : `<span class="${st.cls}"><span class="dot"></span>${st.label}</span>`;
+    } else if (dp.dnd) {
+      // Explicit DND beats the generic red "No" — admin can see (and undo) it.
+      dpPill = `<span class="dp-pill dp-dnd"><span class="dot"></span>DND</span>`;
+      rowVariant = ' dnd-row';
     } else {
       dpPill = `<span class="dp-pill dp-unavailable"><span class="dot"></span>No</span>`;
       rowVariant = ' dnd-row';
@@ -1229,6 +1261,16 @@ function renderTable() {
       }
     }
 
+    // Dialpad DND mini-button — force DND on/off for the agent's Dialpad user.
+    // Shown whenever the row matched a Dialpad user (FF account presence feed).
+    let dndMini = '';
+    if (dp && dp.userId) {
+      // userId passed as a string — Dialpad ids are 16-digit (JS float precision hazard)
+      dndMini = dp.dnd
+        ? `<button class="ovr-mini dnd-on" onclick="event.stopPropagation();setDnd('${dp.userId}',false)" title="Dialpad DND is ON — click to turn OFF (agent rings again)">🌙 DND on</button>`
+        : `<button class="ovr-mini auto" onclick="event.stopPropagation();setDnd('${dp.userId}',true)" title="Force Dialpad DND ON — Dialpad stops ringing this agent. Calls Retreaver still routes to them will hit voicemail; Hold them too to fully de-route.">dnd</button>`;
+    }
+
     // At-a-glance pause reason: HELD = manual indefinite hold (override paused, never
     // auto-resumes); CAPPED = hit daily 60s-call cap (auto, resumes midnight ET).
     let stateTag = '';
@@ -1245,7 +1287,7 @@ function renderTable() {
       <td style="width:20px;"><span class="expand-icon" id="${iconId}">▶</span></td>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">${rank}</td>
       <td><div class="aname">${esc(a.name)}${stateTag}</div></td>
-      <td><div class="avail-cell">${dpPill}${overrideMini}</div></td>
+      <td><div class="avail-cell">${dpPill}${overrideMini}${dndMini}</div></td>
       <td class="r vm">${a.total.toLocaleString()}</td>
       <td class="r vg">${a.unique.toLocaleString()}</td>
       <td class="r vg">${a.answered.toLocaleString()}</td>
@@ -1632,6 +1674,33 @@ async function clearOverride(targetId) {
   }
 }
 
+// ─── Dialpad DND control (admin force on/off via worker /dialpad/dnd) ───────
+async function setDnd(userId, dnd) {
+  const name = dialpadUserIdToName[String(userId)] || `user ${userId}`;
+  const msg = dnd
+    ? `Force Dialpad DND ON for ${name}?\n\nDialpad stops ringing them. NOTE: if their Retreaver target is still active, routed calls will hit their voicemail — use the pause/Hold button too to fully de-route.`
+    : `Turn Dialpad DND OFF for ${name}?\n\nDialpad resumes ringing them (presence cron can re-open their Retreaver target within ~1 min if they're available).`;
+  if (!confirm(msg)) return;
+  try {
+    const res = await authedFetch('/dialpad/dnd', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, dnd }),
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = JSON.stringify(await res.json()); } catch (e) {}
+      throw new Error(`HTTP ${res.status} ${detail}`);
+    }
+    // Update local state immediately so the pill/button flip without waiting
+    // for the next presence poll (which remains the source of truth).
+    Object.values(dialpadStatus).forEach(d => { if (String(d.userId) === String(userId)) d.dnd = dnd; });
+    renderTable();
+  } catch (e) {
+    alert(`DND ${dnd ? 'ON' : 'OFF'} for ${name} FAILED (${e.message}) — Dialpad state unchanged. Retry.`);
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function capCell(a) {
   const target = phoneToTarget[a.dialedNumber];
@@ -1775,6 +1844,7 @@ async function fetchDialpadOutbound(start, end) {
   // worker route fails (older deploy, missing scope), degrade silently —
   // the panel still renders, callback column just stays empty.
   dialpadOutbound = [];
+  dialpadOutboundLoaded = false; // '—' (unknown) until this range's feed lands
   try {
     const res = await authedFetch(`/dialpad/calls?start=${start}&end=${end}&direction=outbound`);
     if (!res.ok) {
@@ -1783,6 +1853,10 @@ async function fetchDialpadOutbound(start, end) {
     }
     const body = await res.json();
     dialpadOutbound = Array.isArray(body?.calls) ? body.calls : [];
+    // A truncated scan is a hard undercount — use the partial rows for the panel
+    // but keep the CALLBACKS KPI at '—' (unknown) rather than a confident low number.
+    dialpadOutboundLoaded = !body?.truncated;
+    if (body?.truncated) console.warn('fetchDialpadOutbound: worker returned truncated scan');
   } catch (e) {
     console.warn('fetchDialpadOutbound failed:', e.message);
   }
@@ -1797,11 +1871,12 @@ async function fetchEternaAgents(start, end) {
   eternaData = null;
   try {
     const res = await authedFetch(`/dialpad/eterna-agents?start=${start}&end=${end}`);
-    if (!res.ok) { console.warn(`fetchEternaAgents: HTTP ${res.status}`); return; }
+    if (!res.ok) { console.warn(`fetchEternaAgents: HTTP ${res.status}`); return null; }
     eternaData = await res.json();
   } catch (e) {
     console.warn('fetchEternaAgents failed:', e.message);
   }
+  return eternaData; // null on failure — consumer keeps '—' instead of a false 0
 }
 
 async function fetchTargetCaps() {
@@ -1971,11 +2046,12 @@ function fmtUSD(n) {
   return '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 // Fill the FF/Eterna cohort-breakdown strip. prefix 'ff' or 'et'; c = summed
-// {t,a,r,l,lv}; uniq = distinct callers for that cohort. Missed = total−answered−live.
-function setCohortCells(prefix, c, uniq) {
+// {t,a,r,l,lv}; uniq = distinct callers for that cohort; missed = unique callers
+// who never connected (same _missed-deduped set as the hero MISSED card).
+function setCohortCells(prefix, c, uniq, missed) {
   const set = (id,v) => { const el = document.getElementById(id); if (el) el.textContent = (Number(v)||0).toLocaleString(); };
   set(prefix+'Total', c.t); set(prefix+'Unique', uniq);
-  set(prefix+'Answered', c.a); set(prefix+'Missed', Math.max(0, c.t - c.a - c.lv));
+  set(prefix+'Answered', c.a); set(prefix+'Missed', missed);
   set(prefix+'Receivable', c.r); set(prefix+'Long', c.l);
 }
 // CPL = Google Ads spend (selected range) ÷ unique calls (selected range), and
@@ -2096,8 +2172,8 @@ async function loadAdSpend(rangeStart, rangeEnd) {
         const sum = (d2.rows || []).reduce((s, r) => s + (Number(r && r.cost) || 0), 0);
         rEl.textContent = fmtUSD(sum);
         lastRangeSpend = sum; renderCPL(); // feed CPL = ad spend ÷ unique calls
-      } else { rEl.textContent = '—'; }
-    } catch (e) { rEl.textContent = '—'; console.warn('loadAdSpend range failed:', e.message); }
+      } else { rEl.textContent = '—'; lastRangeSpend = null; renderCPL(); }
+    } catch (e) { rEl.textContent = '—'; lastRangeSpend = null; renderCPL(); console.warn('loadAdSpend range failed:', e.message); }
   }
 }
 
@@ -2197,15 +2273,27 @@ function renderDealsPanel(deals) {
 // module state set by the three async loaders, so this is idempotent and renders
 // whatever has loaded so far ("…" = still loading, "—" = no denominator).
 
-// Reused for the cross-system closing-agent join. Same comparison the Dialpad↔
-// Retreaver outbound attribution uses inline above (lowercase, name-part substring).
+// Reused for the cross-system name joins (Dialpad↔Retreaver outbound attribution
+// + GHL closing agents). Exact normalized full name first; fuzzy fallback needs
+// BOTH first AND last tokens to hit, so "jonah mejia" never merges with
+// "jonah reyes" on the shared first name. Single-token names match only on an
+// exact whole-token hit.
 function fuzzyNameMatch(n1, n2) {
-  const a = (n1 || '').toLowerCase().trim(), b = (n2 || '').toLowerCase().trim();
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const a = norm(n1), b = norm(n2);
   if (!a || !b) return false;
-  if (a === b) return true;
-  const ap = a.split(' ').filter(p => p.length > 2);
-  const bp = b.split(' ').filter(p => p.length > 2);
-  return ap.some(p => b.includes(p)) || bp.some(p => a.includes(p));
+  if (a === b) return true;                        // exact normalized full-name match
+  const ap = a.split(' '), bp = b.split(' ');
+  // Tokens match exactly, or by prefix for >2-char tokens (chris ↔ christopher).
+  const tokEq  = (x, y) => x === y || (x.length > 2 && y.length > 2 && (x.startsWith(y) || y.startsWith(x)));
+  const hasTok = (arr, t) => arr.some(x => tokEq(x, t));
+  if (ap.length === 1 || bp.length === 1) {
+    const single = ap.length === 1 ? ap[0] : bp[0];
+    const other  = ap.length === 1 ? bp : ap;
+    return hasTok(other, single);
+  }
+  const both = (p, q) => hasTok(q, p[0]) && hasTok(q, p[p.length - 1]);
+  return both(ap, bp) || both(bp, ap);
 }
 
 // close-rate (percent) → color. Life-insurance phone close rates run low; tune freely.
@@ -2334,6 +2422,16 @@ async function fetchData() {
     return;
   }
 
+  if (fetchInFlight) {
+    // Overlapping call (manual refresh / preset / date change while a fetch is
+    // running): queue exactly one re-run so the user's action isn't swallowed —
+    // it picks up the CURRENT control values when the in-flight fetch finishes.
+    fetchRerunQueued = true;
+    return;
+  }
+  fetchInFlight = true;
+  const gen = ++fetchGen;      // stamp this refresh — stale fire-and-forget callbacks no-op
+
   clearInterval(timer);
   countdown = REFRESH; updateCountdown();
 
@@ -2345,28 +2443,47 @@ async function fetchData() {
   dot.className='brand-dot'; st.className='st'; st.textContent='Fetching...';
   err.style.display='none'; load.style.display='block';
 
+  // Resolve the range up front so the loaders that don't depend on the Retreaver
+  // calls feed still run when fetchAllPages throws (Retreaver outage).
+  const { start, end } = getRange(document.getElementById('rangeSelect').value);
+
+  // Reset conversion-tracker + CPL state so a new range never shows stale
+  // closed/eterna/spend numbers while the async loaders refill them.
+  convClosed = null; convRetrAnswered = null; convEternaAnswered = null;
+  convEternaAgents = []; convDealsByAgent = {};
+  lastRangeSpend = null; renderCPL();   // '—' until this range's spend query lands
+
+  // Independent loaders — spend (Google Ads), deals (GHL), Eterna attribution
+  // (Dialpad) and target caps (Retreaver targets endpoint) don't need the calls
+  // feed, so they fire OUT of the critical path and regardless of its outcome.
+  // Eterna ring-group attribution paginates Dialpad (slow, ~18s/day uncached);
+  // worker caches the result 120s, so most refreshes return fast.
+  fetchEternaAgents(start, end).then(d => {
+    if (gen !== fetchGen) return;                              // a newer refresh owns the panels now
+    convEternaAnswered = d ? (d.answered_calls || 0) : null;   // null = feed failed → '—', not a false 0
+    convEternaAgents   = (d && d.agents) || [];
+    renderConversion();
+  });
+  loadAdSpend(start, end);   // account spend — worker KV-caches 15 min
+  loadGhlDeals(start, end);  // Eterna Spark closed deals for the selected range
+  const capsPromise = fetchTargetCaps();  // populates targetIdToName/-Phone, which processCalls needs
+
   let isHistorical = false;
   try {
-    // Reset conversion-tracker state so a new range never shows stale closed/eterna
-    // numbers while the async loaders refill them.
-    convClosed = null; convRetrAnswered = null; convEternaAnswered = null;
-    convEternaAgents = []; convDealsByAgent = {};
-    const { calls, start, end } = await fetchAllPages();
+    const { calls } = await fetchAllPages();
     isHistorical = end < todayYMD();   // whole range is in the past → data is static
-    await fetchTargetCaps();
+    await capsPromise;
     await loadOverridesFromServer();
-    await fetchDialpadOutbound(start, end);
-    processCalls(calls, start, end);
-    // Eterna ring-group attribution paginates Dialpad (slow, ~18s/day uncached) —
-    // load it OUT of the critical path so it never stalls the main render or the
-    // 30s refresh. Worker caches the result 120s, so most refreshes return fast.
-    fetchEternaAgents(start, end).then(d => {
-      convEternaAnswered = (d && d.answered_calls) || 0;
-      convEternaAgents   = (d && d.agents) || [];
-      renderConversion();
+    // Outbound dials (callback cross-ref) — fire-and-forget like fetchEternaAgents
+    // so a slow/5xx /dialpad/calls never stalls the main render. Its sync prefix
+    // clears dialpadOutbound before processCalls below runs; on resolve, re-run
+    // the cross-ref + re-render with the same calls array.
+    fetchDialpadOutbound(start, end).then(() => {
+      // skipStatuses: the initial processCalls below already ran the presence
+      // pull + pause reconciliation for this refresh — don't run them twice.
+      if (gen === fetchGen) processCalls(calls, start, end, { skipStatuses: true });
     });
-    loadAdSpend(start, end);  // account spend — out of critical path; worker KV-caches 15 min
-    loadGhlDeals(start, end);  // Eterna Spark closed deals for the selected range
+    processCalls(calls, start, end);
     if (isHistorical) {
       dot.className='brand-dot'; st.className='st';
       st.textContent=`Historical · ${calls.length.toLocaleString()} calls · ${start}→${end}`;
@@ -2386,13 +2503,30 @@ async function fetchData() {
       `<tr><td colspan="17" class="no-data">No data loaded.</td></tr>`;
   } finally {
     load.style.display='none';
+    fetchInFlight = false;
   }
 
+  if (fetchRerunQueued) {
+    // A manual action landed while this fetch ran — honor it now (it re-reads the
+    // controls, so it renders whatever range the user last picked).
+    fetchRerunQueued = false;
+    setTimeout(fetchData, 0);
+    return;
+  }
   if (!isHistorical) startCountdown();   // past ranges don't auto-refresh; manual Refresh still works
 }
 
 function startCountdown() {
-  timer = setInterval(() => { countdown--; updateCountdown(); if(countdown<=0) fetchData(); }, 1000);
+  clearInterval(timer);   // never stack intervals — an orphaned one would double the refresh rate
+  timer = setInterval(() => {
+    countdown--; updateCountdown();
+    if (countdown <= 0) {
+      // If a slow fetch is still running (outage retries), don't hammer the guard
+      // every second — hold at a short retry instead of counting into negatives.
+      if (fetchInFlight) { countdown = 5; updateCountdown(); }
+      else fetchData();
+    }
+  }, 1000);
 }
 function updateCountdown() {
   document.getElementById('countdown').textContent = `Refresh in ${countdown}s`;
