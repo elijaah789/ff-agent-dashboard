@@ -482,6 +482,7 @@ let notSoldCalls = []; // per-call details for the Not-sold expandable row
 let countdown    = REFRESH;
 let timer        = null;
 let fetchInFlight = false; // reentrancy guard — overlapping fetchData calls no-op
+let fetchRerunQueued = false; // a manual action arrived mid-fetch — re-run once after it finishes
 let fetchGen      = 0;     // bumped per fetchData — stale fire-and-forget callbacks no-op
 let dialpadOutbound = []; // raw outbound dials from /dialpad/calls?direction=outbound
 let dialpadOutboundLoaded = false; // false = feed failed/not loaded yet → CALLBACKS renders '—' not 0
@@ -2112,7 +2113,7 @@ async function submitSpendPassword() {
   }
 }
 
-async function loadAdSpend(rangeStart, rangeEnd) {
+async function loadAdSpend(rangeStart, rangeEnd, gen) {
   if (!SPEND_PASS) { showSpendLock(false); return; }
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
@@ -2167,13 +2168,20 @@ async function loadAdSpend(rangeStart, rangeEnd) {
   if (rEl && rangeStart && rangeEnd) {
     try {
       const res2 = await authedFetch(`/google-ads/spend?start=${rangeStart}&end=${rangeEnd}`);
+      // Stale-resolve guard: a slow range query must not land its spend into a
+      // newer range's CPL (gen is stamped by the fetchData that started us).
+      if (gen !== undefined && gen !== fetchGen) return;
       if (res2.ok) {
         const d2 = await res2.json();
+        if (gen !== undefined && gen !== fetchGen) return;
         const sum = (d2.rows || []).reduce((s, r) => s + (Number(r && r.cost) || 0), 0);
         rEl.textContent = fmtUSD(sum);
         lastRangeSpend = sum; renderCPL(); // feed CPL = ad spend ÷ unique calls
       } else { rEl.textContent = '—'; lastRangeSpend = null; renderCPL(); }
-    } catch (e) { rEl.textContent = '—'; lastRangeSpend = null; renderCPL(); console.warn('loadAdSpend range failed:', e.message); }
+    } catch (e) {
+      if (gen !== undefined && gen !== fetchGen) return;
+      rEl.textContent = '—'; lastRangeSpend = null; renderCPL(); console.warn('loadAdSpend range failed:', e.message);
+    }
   }
 }
 
@@ -2181,20 +2189,24 @@ async function loadAdSpend(rangeStart, rangeEnd) {
 // Pull closed deals (Target Premium + closing agent) for the SAME date range the
 // call panels use, group by agent, render a per-agent rollup with expandable deal
 // lists + grand totals. Runs out of the critical path; worker KV-caches 5 min.
-async function loadGhlDeals(start, end) {
+async function loadGhlDeals(start, end, gen) {
   const body = document.getElementById('dealsBody');
   const countEl = document.getElementById('dealsCount');
   if (!body) return;
   try {
     const res = await authedFetch(`/ghl/deals?start=${start}&end=${end}`);
+    // Stale-resolve guard: don't render a previous range's deals over a newer one.
+    if (gen !== undefined && gen !== fetchGen) return;
     if (!res.ok) {
       body.innerHTML = `<p class="no-data" style="padding:16px;">Deals unavailable (HTTP ${res.status}).</p>`;
       if (countEl) countEl.textContent = '—';
       return;
     }
     const data = await res.json();
+    if (gen !== undefined && gen !== fetchGen) return;
     renderDealsPanel(data.deals || []);
   } catch (e) {
+    if (gen !== undefined && gen !== fetchGen) return;
     body.innerHTML = `<p class="no-data" style="padding:16px;">Could not load deals: ${esc(e.message)}</p>`;
     if (countEl) countEl.textContent = '—';
     console.warn('loadGhlDeals failed:', e.message);
@@ -2284,8 +2296,11 @@ function fuzzyNameMatch(n1, n2) {
   if (!a || !b) return false;
   if (a === b) return true;                        // exact normalized full-name match
   const ap = a.split(' '), bp = b.split(' ');
-  // Tokens match exactly, or by prefix for >2-char tokens (chris ↔ christopher).
-  const tokEq  = (x, y) => x === y || (x.length > 2 && y.length > 2 && (x.startsWith(y) || y.startsWith(x)));
+  // Tokens match exactly, by prefix for >2-char tokens (chris ↔ christopher), or
+  // as an initial when one side is a single letter (g ↔ gold, 'Steven G' rosters).
+  const tokEq  = (x, y) => x === y
+    || (x.length > 2 && y.length > 2 && (x.startsWith(y) || y.startsWith(x)))
+    || (x.length === 1 && y.startsWith(x)) || (y.length === 1 && x.startsWith(y));
   const hasTok = (arr, t) => arr.some(x => tokEq(x, t));
   if (ap.length === 1 || bp.length === 1) {
     const single = ap.length === 1 ? ap[0] : bp[0];
@@ -2460,12 +2475,15 @@ async function fetchData() {
   // worker caches the result 120s, so most refreshes return fast.
   fetchEternaAgents(start, end).then(d => {
     if (gen !== fetchGen) return;                              // a newer refresh owns the panels now
-    convEternaAnswered = d ? (d.answered_calls || 0) : null;   // null = feed failed → '—', not a false 0
+    // null = feed failed OR truncated scan (Dialpad slow) → '—', never a false low
+    // denominator. The worker backfills the full scan in the background, so the
+    // next 30s refresh typically gets the complete cached aggregate.
+    convEternaAnswered = (d && !d.truncated) ? (d.answered_calls || 0) : null;
     convEternaAgents   = (d && d.agents) || [];
     renderConversion();
   });
-  loadAdSpend(start, end);   // account spend — worker KV-caches 15 min
-  loadGhlDeals(start, end);  // Eterna Spark closed deals for the selected range
+  loadAdSpend(start, end, gen);   // account spend — worker KV-caches 15 min
+  loadGhlDeals(start, end, gen);  // Eterna Spark closed deals for the selected range
   const capsPromise = fetchTargetCaps();  // populates targetIdToName/-Phone, which processCalls needs
 
   let isHistorical = false;
