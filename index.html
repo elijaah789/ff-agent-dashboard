@@ -254,6 +254,7 @@
     <div class="mc r" onclick="openMissedPanel()" style="cursor:pointer;" title="Click to see every missed call"><div class="ml">Missed calls</div>  <div class="mv r" id="mMissed">—</div></div>
     <div class="mc p"><div class="ml">10min+ calls</div>  <div class="mv p" id="mLongCalls">—</div></div>
     <div class="mc b"><div class="ml">Live now</div>      <div class="mv b" id="mLive">—</div></div>
+    <div class="mc a"><div class="ml">Spanish line</div>  <div class="mv a" id="mSpanish">—</div></div>
     <div class="mc g"><div class="ml">Callbacks</div>     <div class="mv g" id="mCallbacks">—</div></div>
     <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
@@ -459,7 +460,13 @@ if (cfg.campaign) localStorage.setItem('ff_campaign', cfg.campaign);
 
 const WORKER_URL    = cfg.worker.replace(/\/$/, '');
 const SHARED_TOKEN  = cfg.token;
-const CAMPAIGN_KEY  = cfg.campaign; // Retreaver campaign cid hex
+const CAMPAIGN_KEY  = cfg.campaign; // Retreaver campaign cid(s), comma-separated
+// Multi-campaign: `campaign=a9de5731,es-google-1` shows both the English line and
+// the Spanish line. Single-cid URLs keep working unchanged.
+const CAMPAIGN_KEYS = new Set(cfg.campaign.split(',').map(s => s.trim()).filter(Boolean));
+// Spanish test line (844) 623-5771 → Retreaver campaign es-google-1. Calls with
+// this cid feed the "Spanish line" hero tile and get the ES pill in call lists.
+const ES_CID        = 'es-google-1';
 
 const REFRESH       = 30;
 
@@ -917,6 +924,7 @@ function processCalls(calls, start, end, opts) {
   const agents     = {};
   const statusCount= {};
   let totTotal=0, totUnique=0, totAnswered=0, totReceivable=0, totLongCalls=0, totNotSold=0, totLive=0;
+  let esTotal=0, esAnswered=0, esReceivable=0, esLive=0; // Spanish line (cid es-google-1)
   notSoldCalls = []; // reset details for the not-sold dropdown
   const notSoldSeen = new Set(); // dedupe by caller number
   const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
@@ -944,7 +952,8 @@ function processCalls(calls, start, end, opts) {
 
     // Retreaver exposes the campaign key hex as `cid` (never `campaign_key`);
     // stay permissive when the field is absent.
-    if (CAMPAIGN_KEY && call.cid && call.cid !== CAMPAIGN_KEY) return;
+    if (CAMPAIGN_KEYS.size && call.cid && !CAMPAIGN_KEYS.has(call.cid)) return;
+    if (call.cid === ES_CID) { call._es = true; esTotal++; }
 
     // Tag every missed-status call (not-open / no-target / no-answer /
     // rejected), whether or not Retreaver ever picked a target. The Missed
@@ -1008,7 +1017,7 @@ function processCalls(calls, start, end, opts) {
       caller_city:  call.caller_city  || '—',
     });
 
-    if (LIVE_S.has(s))               { a.live++; totLive++; a.dur += dur; return; }
+    if (LIVE_S.has(s))               { a.live++; totLive++; if (call._es) esLive++; a.dur += dur; return; }
     // Routed but neither answered nor live = the remainder term of the Missed
     // metric; tag it so the Missed panel lists exactly what the card counts.
     if (!ANSWERED_S.has(s)) call._missed = true;
@@ -1018,8 +1027,8 @@ function processCalls(calls, start, end, opts) {
     // account, so don't gate display metrics on it. The Quality Call upload
     // cron in worker.js uses its own (connected + dur>=90s) filter and is
     // unaffected by this change.
-    if (ANSWERED_S.has(s))               { a.answered++; totAnswered++; }
-    if (ANSWERED_S.has(s) && dur >= 60)  { a.receivable++; totReceivable++; }
+    if (ANSWERED_S.has(s))               { a.answered++; totAnswered++; if (call._es) esAnswered++; }
+    if (ANSWERED_S.has(s) && dur >= 60)  { a.receivable++; totReceivable++; if (call._es) esReceivable++; }
     if (ANSWERED_S.has(s) && dur >= 600) { a.longCalls++; totLongCalls++; }
   });
 
@@ -1137,6 +1146,11 @@ function processCalls(calls, start, end, opts) {
   document.getElementById('mNotSold').textContent    = totNotSold.toLocaleString();
   document.getElementById('mLongCalls').textContent  = totLongCalls.toLocaleString();
   document.getElementById('mLive').textContent       = totLive.toLocaleString();
+  const mSpanish = document.getElementById('mSpanish');
+  if (mSpanish) {
+    mSpanish.textContent = esLive > 0 ? `${esTotal} · ${esLive} live` : esTotal.toLocaleString();
+    mSpanish.title = `Spanish line (844) 623-5771 — total ${esTotal} · answered ${esAnswered} · receivable (60s+) ${esReceivable} · live ${esLive}`;
+  }
   document.getElementById('mMissed').textContent     = totMissed.toLocaleString();
   document.getElementById('mCallbacks').textContent  = dialpadOutboundLoaded ? totCallbacks.toLocaleString() : '—'; // '—' = outbound feed not loaded (unknown), not a real zero
   document.getElementById('mRate').textContent       = rate + '%';
@@ -1174,7 +1188,8 @@ function processCalls(calls, start, end, opts) {
 `DATE RANGE: ${start} → ${end}
 TOTAL CALLS (after date filter): ${calls.length}
 STATUS BREAKDOWN: ${JSON.stringify(statusCount,null,2)}
-CAMPAIGN FILTER: ${CAMPAIGN_KEY || '(all campaigns)'}
+CAMPAIGN FILTER: ${CAMPAIGN_KEYS.size ? [...CAMPAIGN_KEYS].join(', ') : '(all campaigns)'}
+SPANISH LINE: total=${esTotal} answered=${esAnswered} receivable=${esReceivable} live=${esLive}
 COMPUTED: total=${totTotal} unique=${totUnique} answered=${totAnswered} notSold=${totNotSold} live=${totLive}
 PHONE->TARGET MAP (${Object.keys(phoneToTarget).length} entries):
 ${Object.entries(phoneToTarget).map(([k,v]) => '  ' + k + ' -> ' + v.name + ' (ID:' + v.targetId + ')').join('\n')}
@@ -1469,11 +1484,15 @@ function buildAllCallsTable(calls) {
       ? `<a href="${esc(c.recording_url)}" target="_blank" rel="noopener" class="rec-btn">▶ Play</a>`
       : '<span class="vm" style="font-size:11px;">—</span>';
 
+    const esPill = c.cid === ES_CID
+      ? ' <span class="acp-pill" style="background:#fef3c7;color:#92400e;" title="Spanish line (844) 623-5771">ES</span>'
+      : '';
+
     return `<tr>
       <td class="r" style="white-space:nowrap;">${dt} ${tm}</td>
       <td style="font-family:var(--font-mono);font-size:12px;">${esc(fmtPhoneE164(c.caller))}</td>
       <td>${esc(c.caller_city || '—')}, ${esc(c.caller_state || '—')}</td>
-      <td><span class="acp-pill ${pillCls}" title="${esc(c.status || '')}">${esc(missedLbl(c.status) || '—')}</span></td>
+      <td><span class="acp-pill ${pillCls}" title="${esc(c.status || '')}">${esc(missedLbl(c.status) || '—')}</span>${esPill}</td>
       <td class="r">${fmtDur(dur)}</td>
       <td>${esc(outcome)}</td>
       <td class="r">${cb}</td>
