@@ -259,6 +259,7 @@
     <div class="mc a"><div class="ml">Answer rate</div>   <div class="mv a" id="mRate">—</div></div>
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
     <div class="mc g"><div class="ml">Available now</div> <div class="mv g" id="mAvail">—</div></div>
+    <div class="mc b"><div class="ml">Daily quota</div>   <div class="mv b" id="mQuota">—</div></div>
   </div>
 
   <div class="spend-strip" id="cohortStrip">
@@ -1155,6 +1156,7 @@ function processCalls(calls, start, end, opts) {
   document.getElementById('mCallbacks').textContent  = dialpadOutboundLoaded ? totCallbacks.toLocaleString() : '—'; // '—' = outbound feed not loaded (unknown), not a real zero
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
+  renderQuota(); // daily cap fulfilment vs live filled (excludes unlimited agents)
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
 
   // Feed the conversion tracker with the Retreaver answered total for this range.
@@ -1941,11 +1943,47 @@ async function fetchTargetCaps() {
     }
     console.log('Target caps loaded:', Object.keys(targetCaps).length);
     renderAvailability();
+    renderQuota();
     // Re-render presence strip — pills depend on targetCaps for Capped/Held state
     updateDialpadBar();
   } catch(e) {
     console.warn('Could not fetch target caps:', e.message);
   }
+}
+
+// Daily call quota = sum of every agent's Retreaver Daily cap, EXCLUDING agents
+// left unlimited (∞) — those have no quota so they're skipped, per the ask.
+// "Filled" = Retreaver's own Daily `filled` (60s-connected calls, the same count
+// the per-row "Daily cap" column shows) summed over those SAME capped agents, so
+// numerator and denominator stay apples-to-apples. This is a TODAY metric:
+// Retreaver resets `filled` at midnight Arizona time, so it ignores the date
+// range picker (which only re-slices the call history above).
+function renderQuota() {
+  const el = document.getElementById('mQuota');
+  if (!el) return;
+  let quota = 0, filled = 0, capped = 0;
+  Object.values(targetCaps).forEach(c => {
+    if (c && c.daily != null) {          // finite cap only — unlimited (null) skipped
+      quota  += c.daily;
+      filled += (c.dailyFilled || 0);
+      capped++;
+    }
+  });
+  const card = el.closest('.mc');
+  if (!quota) {                          // nobody has a finite cap → nothing to fulfil
+    el.textContent = '—';
+    el.style.color = '';
+    if (card) card.title = 'No daily caps set — every agent is unlimited (nothing to count).';
+    return;
+  }
+  const pct = Math.round((filled / quota) * 100);
+  el.textContent = `${filled}/${quota}`;
+  // Green once the day's quota is fully filled, otherwise leave the card's blue.
+  el.style.color = filled >= quota ? 'var(--green, #4caf50)' : '';
+  if (card) card.title =
+    `Daily call quota — sum of every capped agent's daily cap (${capped} capped agent${capped!==1?'s':''}; ` +
+    `unlimited agents excluded). ${filled} of ${quota} filled today (${pct}%), ${Math.max(quota-filled,0)} to go. ` +
+    `Counts Retreaver's 60s-connected Daily "filled"; resets midnight Arizona — not affected by the date range.`;
 }
 
 // ─── Durable force-pause: KV overrides on every target ──────────────────────
