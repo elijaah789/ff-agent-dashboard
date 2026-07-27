@@ -944,6 +944,12 @@ function processCalls(calls, start, end, opts) {
     const sysId    = call.system_target_id;
     // tid is null on most Retreaver setups; fall back to target name from our map
     const agent    = call.tid || (sysId ? targetIdToName[sysId] : null) || null;
+    // Row identity is the TARGET, not the display name. One agent can hold two
+    // Retreaver targets (two DIDs) under the same name — e.g. Ravi Verma on
+    // 140772 + 135932 — and keying by name collapsed them into a single row,
+    // hiding one line's calls entirely. Fall back to the name only for records
+    // with no system_target_id (tid-only; unused on this account).
+    const agentKey = sysId != null ? 'tgt:' + sysId : agent;
     statusCount[s] = (statusCount[s]||0) + 1;
 
     if (call.dialed_number && sysId && agent) {
@@ -987,7 +993,7 @@ function processCalls(calls, start, end, opts) {
 
     if (!agent) return;
 
-    if (!agents[agent]) agents[agent] = {
+    if (!agents[agentKey]) agents[agentKey] = {
       name: agent, total:0, unique:0, callers:new Set(),
       answered:0, live:0, dur:0,
       receivable:0, longCalls:0, outbound:0, calls:[],
@@ -995,7 +1001,7 @@ function processCalls(calls, start, end, opts) {
       cohort: cohortOf(call.dialed_number)
     };
 
-    const a   = agents[agent];
+    const a   = agents[agentKey];
     const dur = parseInt(call.total_duration || 0, 10);
     a.total++; totTotal++;
     if (call.caller) uniqueCallers.add(call.caller); // global distinct — counts a number once even if it reaches multiple agents
@@ -1063,8 +1069,9 @@ function processCalls(calls, start, end, opts) {
   // Ensure every known Retreaver target has a row, even if it had 0 calls in this period.
   // This way all 4 agents appear with the admin override toggle even on a quiet day.
   Object.entries(targetIdToName).forEach(([targetId, name]) => {
-    if (!agents[name]) {
-      agents[name] = {
+    const k = 'tgt:' + targetId;                 // same target-keyed identity as above
+    if (!agents[k]) {
+      agents[k] = {
         name, total:0, unique:0, callers:new Set(),
         answered:0, live:0, dur:0,
         receivable:0, longCalls:0, outbound:0, calls:[],
