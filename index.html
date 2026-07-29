@@ -624,32 +624,41 @@ function showSetupBanner() {
 }
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
+// Every "day" on this dashboard is an ARIZONA day (America/Phoenix, fixed UTC-7,
+// no DST) regardless of where the viewer's browser is — so the numbers read the
+// same from Phoenix, Sweden, or anywhere else.
+const AZ_TZ = 'America/Phoenix';
+const AZ_OFFSET = '-07:00';
 function todayYMD() {
-  const now = new Date();
-  const pad = n => String(n).padStart(2,'0');
-  return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+  return new Intl.DateTimeFormat('en-CA', { timeZone: AZ_TZ }).format(new Date());
 }
+// Shift a YYYY-MM-DD by whole days — pure calendar math, viewer-timezone-free.
+function shiftYMD(ymd, days) {
+  const d = new Date(ymd + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+// Day-of-week (0=Sun) of a YYYY-MM-DD, viewer-timezone-free.
+function dowYMD(ymd) { return new Date(ymd + 'T00:00:00Z').getUTCDay(); }
 // Resolve the active selection (preset or custom) into {start,end} YYYY-MM-DD and
 // mirror the result back into the two date inputs so they always show the live
 // range. 'custom' reads the inputs and normalises them: swap if reversed, a blank
 // field collapses to a single day, both blank falls back to today.
 function getRange(val) {
-  const now = new Date();
-  const pad = n => String(n).padStart(2,'0');
-  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const today = todayYMD();   // Arizona day, not the viewer's local day
   let start, end;
-  if (val === 'today')          { start = fmt(now); end = fmt(now); }
-  else if (val === 'yesterday') { const y=new Date(now); y.setDate(y.getDate()-1); start=fmt(y); end=fmt(y); }
-  else if (val === '7days')     { const s=new Date(now); s.setDate(s.getDate()-6);  start=fmt(s); end=fmt(now); }
-  else if (val === '30days')    { const s=new Date(now); s.setDate(s.getDate()-29); start=fmt(s); end=fmt(now); }
+  if (val === 'today')          { start = today; end = today; }
+  else if (val === 'yesterday') { start = shiftYMD(today, -1); end = start; }
+  else if (val === '7days')     { start = shiftYMD(today, -6);  end = today; }
+  else if (val === '30days')    { start = shiftYMD(today, -29); end = today; }
   else if (val === 'custom') {
     start = document.getElementById('startDate').value;
     end   = document.getElementById('endDate').value;
-    if (!start && !end) { start = fmt(now); end = fmt(now); }
+    if (!start && !end) { start = today; end = today; }
     else if (!start)    { start = end; }
     else if (!end)      { end = start; }
     if (end < start)    { const t = start; start = end; end = t; }
-  } else { start = fmt(now); end = fmt(now); }
+  } else { start = today; end = today; }
   const si = document.getElementById('startDate'), ei = document.getElementById('endDate');
   if (si) si.value = start;
   if (ei) ei.value = end;
@@ -669,28 +678,21 @@ function onCustomDate() {
 
 // ─── Retreaver: fetch all pages ───────────────────────────────────────────────
 // Pad API window by ±1 day. The Retreaver API treats start/end as UTC midnights,
-// but our local-day "today" can span up to 2 UTC dates depending on timezone
-// (US is 4-8h behind UTC, so Pacific evening is already next-day UTC).
-// Without padding, calls that happen in the user's local "today" but cross
-// into the next UTC day get dropped from the API response and never render.
-// The client-side date filter below still trims to the actual local-day range.
-function padDate(ymd, days) {
-  const d = new Date(ymd + 'T00:00:00');
-  d.setDate(d.getDate() + days);
-  const pad = n => String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-}
+// but an Arizona day spans 2 UTC dates (Phoenix evening is already next-day UTC).
+// Without padding, calls in the Arizona "today" that cross into the next UTC day
+// get dropped from the API response and never render. The client-side date filter
+// below still trims to the actual Arizona-day range.
 async function fetchAllPages() {
   const { start, end } = getRange(document.getElementById('rangeSelect').value);
-  const apiStart = padDate(start, -1);
-  const apiEnd   = padDate(end,   +1);
+  const apiStart = shiftYMD(start, -1);
+  const apiEnd   = shiftYMD(end,   +1);
   const prog = document.getElementById('prog');
   prog.style.display = 'block';
 
   let all = [], page = 1, partial = false;
   const seenKeys = new Set(); // dedupe across pages — live pagination shift / mixed fresh+snapshot pages repeat rows
-  const startMs = new Date(start + 'T00:00:00').getTime();
-  const endMs   = new Date(end   + 'T23:59:59').getTime();
+  const startMs = new Date(start + 'T00:00:00' + AZ_OFFSET).getTime();
+  const endMs   = new Date(end   + 'T23:59:59' + AZ_OFFSET).getTime();
   const TRANSIENT = [429, 500, 502, 503, 504];
 
   while (page <= 200) {
@@ -1164,7 +1166,7 @@ function processCalls(calls, start, end, opts) {
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
   renderQuota(); // daily cap fulfilment vs live filled (excludes unlimited agents)
-  document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+  document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString([], {timeZone:AZ_TZ})} AZ`;
 
   // Feed the conversion tracker with the Retreaver answered total for this range.
   convRetrAnswered = totAnswered;
@@ -1364,8 +1366,8 @@ function buildDetailTable(a) {
   const sorted = [...a.calls].sort((x,y) => new Date(y.start_time) - new Date(x.start_time));
 
   const rows = sorted.map(c => {
-    const time = c.start_time ? new Date(c.start_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
-    const date = c.start_time ? new Date(c.start_time).toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const time = c.start_time ? new Date(c.start_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',timeZone:AZ_TZ}) : '—';
+    const date = c.start_time ? new Date(c.start_time).toLocaleDateString([], {month:'short',day:'numeric',timeZone:AZ_TZ}) : '—';
     const dur  = fmtDur(c.duration);
     const cs   = (c.status || '').toLowerCase();
     const isAns  = ANSWERED_S.has(cs);
@@ -1418,8 +1420,8 @@ function buildNotSoldTable() {
   const sorted = [...notSoldCalls].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
 
   const rows = sorted.map(c => {
-    const time = c.start_time ? new Date(c.start_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
-    const date = c.start_time ? new Date(c.start_time).toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const time = c.start_time ? new Date(c.start_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',timeZone:AZ_TZ}) : '—';
+    const date = c.start_time ? new Date(c.start_time).toLocaleDateString([], {month:'short',day:'numeric',timeZone:AZ_TZ}) : '—';
     const att  = c.attempts > 1
       ? `<span class="va">${c.attempts} attempts</span>`
       : '<span class="vm">1 attempt</span>';
@@ -1473,8 +1475,8 @@ function buildAllCallsTable(calls) {
   const sorted = [...calls].sort((a,b) => new Date(b.start_time) - new Date(a.start_time));
   const rows = sorted.map(c => {
     const t   = c.start_time ? new Date(c.start_time) : null;
-    const tm  = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
-    const dt  = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const tm  = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',timeZone:AZ_TZ}) : '—';
+    const dt  = t ? t.toLocaleDateString([], {month:'short',day:'numeric',timeZone:AZ_TZ}) : '—';
     const dur = parseInt(c.total_duration || 0, 10);
     const s   = (c.status || '').toLowerCase();
 
@@ -1543,8 +1545,8 @@ function buildMissedTable(missed) {
   });
   const rows = [...byCaller.values()].map(c => {
     const t  = c.start_time ? new Date(c.start_time) : null;
-    const tm = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
-    const dt = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const tm = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',timeZone:AZ_TZ}) : '—';
+    const dt = t ? t.toLocaleDateString([], {month:'short',day:'numeric',timeZone:AZ_TZ}) : '—';
     const s  = (c.status || '').toLowerCase();
     const reason = MISSED_S.has(s)
       ? (s === 'not-open' || s === 'not_open' ? 'not-open · outside hours'
@@ -1597,8 +1599,8 @@ function buildOutboundTable() {
   const rows = sorted.map(o => {
     const ts = tsOf(o);
     const t  = ts ? new Date(ts) : null;
-    const tm = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
-    const dt = t ? t.toLocaleDateString([], {month:'short',day:'numeric'}) : '—';
+    const tm = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',timeZone:AZ_TZ}) : '—';
+    const dt = t ? t.toLocaleDateString([], {month:'short',day:'numeric',timeZone:AZ_TZ}) : '—';
     const tgtId   = (o.target && o.target.id) || o.target_id || null;
     const tgtName = (o.target && o.target.name) || o.target_name
                    || (tgtId != null ? dialpadUserIdToName[String(tgtId)] : null)
@@ -1859,7 +1861,7 @@ async function testRetreaverPause() {
   const debugEl = document.getElementById('debugBox');
   debugEl.style.display = 'block';
   const resultText = results.map(r => `  ${r.ok ? 'OK' : 'FAIL'} ${r.name} (ID:${r.targetId}) -> ${r.action} [HTTP ${r.http}]`).join('\n');
-  debugEl.textContent = debugEl.textContent.split('\n\nMANUAL PAUSE')[0] + '\n\nMANUAL PAUSE (' + new Date().toLocaleTimeString() + '):\n' + resultText;
+  debugEl.textContent = debugEl.textContent.split('\n\nMANUAL PAUSE')[0] + '\n\nMANUAL PAUSE (' + new Date().toLocaleTimeString([], {timeZone:AZ_TZ}) + '):\n' + resultText;
 
   const passed = results.filter(r => r.ok).length;
   const failed = results.filter(r => !r.ok).length;
@@ -2023,7 +2025,7 @@ async function holdAll() {
   const debugEl = document.getElementById('debugBox');
   debugEl.style.display = 'block';
   const lines = results.map(r => '  ' + (r.ok ? 'OK' : 'FAIL') + ' ' + r.name + ' (ID:' + r.targetId + ') -> HELD [HTTP ' + r.http + ']').join('\n');
-  debugEl.textContent = debugEl.textContent.split('\n\nHOLD ALL')[0] + '\n\nHOLD ALL (' + new Date().toLocaleTimeString() + '):\n' + lines;
+  debugEl.textContent = debugEl.textContent.split('\n\nHOLD ALL')[0] + '\n\nHOLD ALL (' + new Date().toLocaleTimeString([], {timeZone:AZ_TZ}) + '):\n' + lines;
   const failed = results.filter(r => !r.ok);
   if (failed.length) {
     alert(`Hold FAILED for ${failed.length}/${results.length} agents:\n${failed.map(f => f.name).join(', ')}\n\nRetry Hold ALL — un-held agents can be auto-unpaused by the cron.`);
@@ -2095,7 +2097,7 @@ async function unpauseAll() {
   const debugEl = document.getElementById('debugBox');
   debugEl.style.display = 'block';
   const lines = results.map(r => '  ' + (r.ok ? 'OK' : 'FAIL') + ' ' + r.name + ' (ID:' + r.targetId + ') -> UNPAUSED [HTTP ' + r.http + ']').join('\n');
-  debugEl.textContent = debugEl.textContent.split('\n\nUNPAUSE ALL')[0] + '\n\nUNPAUSE ALL (' + new Date().toLocaleTimeString() + '):\n' + lines;
+  debugEl.textContent = debugEl.textContent.split('\n\nUNPAUSE ALL')[0] + '\n\nUNPAUSE ALL (' + new Date().toLocaleTimeString([], {timeZone:AZ_TZ}) + '):\n' + lines;
   const ok = results.filter(r => r.ok).length;
   btn.textContent = `✓ ${ok}/${results.length} unpaused`;
   setTimeout(() => { btn.textContent = 'Unpause all'; btn.disabled = false; }, 5000);
@@ -2179,15 +2181,11 @@ async function submitSpendPassword() {
 
 async function loadAdSpend(rangeStart, rangeEnd, gen) {
   if (!SPEND_PASS) { showSpendLock(false); return; }
-  const pad = n => String(n).padStart(2, '0');
-  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const ids = ['mSpendToday','mSpendWk7','mSpendWkCal','mSpendMo30','mSpendMoMTD','mSpendRange'];
   const setAll = v => ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = v; });
 
-  const now = new Date();
-  const end = fmt(now);
-  const startD = new Date(now); startD.setDate(startD.getDate() - 30);
-  const start = fmt(startD);
+  const end = todayYMD();   // Arizona day — matches the ad account's day buckets
+  const start = shiftYMD(end, -30);
 
   // ── Live "now" cards: trailing-30 window, same query every refresh (cache hit) ──
   try {
@@ -2205,19 +2203,19 @@ async function loadAdSpend(rangeStart, rangeEnd, gen) {
       (data.rows || []).forEach(r => { if (r && r.date) byDay[r.date] = (byDay[r.date] || 0) + (Number(r.cost) || 0); });
 
       const todayStr = end;
-      const d6  = new Date(now); d6.setDate(d6.getDate() - 6);        // trailing 7 incl today
-      const sun = new Date(now); sun.setDate(sun.getDate() - sun.getDay()); // calendar week start (Sun)
-      const d29 = new Date(now); d29.setDate(d29.getDate() - 29);     // trailing 30 incl today
-      const moStart = `${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;   // calendar month start
+      const d6  = shiftYMD(end, -6);                 // trailing 7 incl today
+      const sun = shiftYMD(end, -dowYMD(end));       // calendar week start (Sun)
+      const d29 = shiftYMD(end, -29);                // trailing 30 incl today
+      const moStart = end.slice(0, 8) + '01';        // calendar month start
 
       const sumBetween = (lo, hi) => Object.keys(byDay)
         .filter(d => d >= lo && d <= hi)
         .reduce((s, d) => s + byDay[d], 0);
 
       document.getElementById('mSpendToday').textContent = fmtUSD(byDay[todayStr] || 0);
-      document.getElementById('mSpendWk7').textContent   = fmtUSD(sumBetween(fmt(d6), todayStr));
-      document.getElementById('mSpendWkCal').textContent = fmtUSD(sumBetween(fmt(sun), todayStr));
-      document.getElementById('mSpendMo30').textContent  = fmtUSD(sumBetween(fmt(d29), todayStr));
+      document.getElementById('mSpendWk7').textContent   = fmtUSD(sumBetween(d6, todayStr));
+      document.getElementById('mSpendWkCal').textContent = fmtUSD(sumBetween(sun, todayStr));
+      document.getElementById('mSpendMo30').textContent  = fmtUSD(sumBetween(d29, todayStr));
       document.getElementById('mSpendMoMTD').textContent = fmtUSD(sumBetween(moStart, todayStr));
     }
   } catch (e) {
