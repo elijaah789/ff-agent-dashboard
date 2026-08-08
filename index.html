@@ -483,6 +483,26 @@ const ANSWERED_S = new Set(['finished','completed']);
 const MISSED_S = new Set(['no-target','no_target','no-buyer','no_buyer','no-answer','no_answer','not-open','not_open','rejected']);
 const missedLbl = s => MISSED_S.has((s || '').toLowerCase().trim()) ? 'missed' : s;
 
+// ─── Duration basis: TALK time, not call lifecycle ───────────────────────────
+// Retreaver ships two clocks per call:
+//   total_duration        = whole call — IVR + ring + HOLD + talk
+//   dialed_call_duration  = the agent leg only (what they actually talked)
+// Every agent-facing metric (Receivable 60s+, 10min+, talk time, cap fill) must
+// use the AGENT LEG. Hold/IVR is not the agent's conversation, and Retreaver's
+// own 60s sale timer — the thing that drives the target's Daily cap `filled`
+// counter and the `converted` flag — fires on the agent leg too. Verified
+// 2026-08-08: dialed>=60 matched Retreaver `converted` 32/32 that day, while
+// total>=60 returned 34 (two 61s calls that were really 43s+18s hold and
+// 48s+13s hold). Falls back to total_duration only for LIVE calls, where
+// Retreaver leaves dialed_call_duration null until the leg ends.
+function talkSeconds(c) {
+  const d = c.dialed_call_duration;
+  return parseInt((d != null ? d : (c.total_duration || 0)), 10) || 0;
+}
+// Whole-call lifecycle — ONLY for how long a caller waited before abandoning
+// (missed / hung-up labels). Never for agent performance.
+const lifeSeconds = c => parseInt(c.total_duration || 0, 10) || 0;
+
 // ─── State ────────────────────────────────────────────────────────────────────
 let allAgents    = [];
 let notSoldCount = 0;
@@ -982,7 +1002,9 @@ function processCalls(calls, start, end, opts) {
             caller: call.caller || '—',
             start_time: call.start_time,
             status: call.status,
-            duration: parseInt(call.total_duration || 0, 10),
+            // Lifecycle, NOT talk time — these never reached an agent, so the
+            // useful number is how long the caller waited before abandoning.
+            duration: lifeSeconds(call),
             caller_state: call.caller_state || '—',
             caller_city:  call.caller_city  || '—',
             recording_url: call.recording_url || null,
@@ -1004,7 +1026,7 @@ function processCalls(calls, start, end, opts) {
     };
 
     const a   = agents[agentKey];
-    const dur = parseInt(call.total_duration || 0, 10);
+    const dur = talkSeconds(call);   // agent leg only — no IVR/hold. See talkSeconds().
     a.total++; totTotal++;
     if (call.caller) uniqueCallers.add(call.caller); // global distinct — counts a number once even if it reaches multiple agents
     if (call.caller) (a.cohort === 'eterna' ? uniqueEterna : uniqueFF).add(call.caller); // per-cohort distinct
@@ -1033,9 +1055,11 @@ function processCalls(calls, start, end, opts) {
     if (dur > 0) a.dur += dur;
     // Use status-based metrics. Retreaver's `receivable` flag depends on
     // campaign payout config and is currently false for every call on this
-    // account, so don't gate display metrics on it. The Quality Call upload
-    // cron in worker.js uses its own (connected + dur>=90s) filter and is
-    // unaffected by this change.
+    // account, so don't gate display metrics on it. `dur` here is TALK time
+    // (talkSeconds), so answered && dur>=60 reproduces Retreaver's `converted`
+    // flag exactly — and therefore the target's Daily cap `filled` counter.
+    // The Quality Call upload cron in worker.js uses its own (connected +
+    // dur>=90s) filter and is unaffected by this change.
     if (ANSWERED_S.has(s))               { a.answered++; totAnswered++; if (call._es) esAnswered++; }
     if (ANSWERED_S.has(s) && dur >= 60)  { a.receivable++; totReceivable++; if (call._es) esReceivable++; }
     if (ANSWERED_S.has(s) && dur >= 600) { a.longCalls++; totLongCalls++; }
@@ -1373,9 +1397,10 @@ function buildDetailTable(a) {
     const isAns  = ANSWERED_S.has(cs);
     const isLive = LIVE_S.has(cs);
     // Receivable = the SAME 60s-threshold rule the caps + agent-table column use
-    // (answered & dur>=60). Retreaver's raw `receivable` flag is false on every
-    // call on this account (internal agent routes, not buyer-billable), so gating
-    // the per-call display on it wrongly showed 0 while caps showed 3+. See L1090.
+    // (answered & TALK time >= 60 — c.duration is already talkSeconds()).
+    // Retreaver's raw `receivable` flag is false on every call on this account
+    // (internal agent routes, not buyer-billable), so gating the per-call display
+    // on it wrongly showed 0 while caps showed 3+. See L1090.
     const isRec  = isAns && c.duration >= 60;
     const statusCls = isLive ? 'vb' : isAns ? 'vg' : 'vm';
     const statusLbl = isLive ? 'Live' : isAns ? 'Answered' : (missedLbl(c.status) || 'missed');
@@ -1477,16 +1502,21 @@ function buildAllCallsTable(calls) {
     const t   = c.start_time ? new Date(c.start_time) : null;
     const tm  = t ? t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',timeZone:AZ_TZ}) : '—';
     const dt  = t ? t.toLocaleDateString([], {month:'short',day:'numeric',timeZone:AZ_TZ}) : '—';
-    const dur = parseInt(c.total_duration || 0, 10);
-    const s   = (c.status || '').toLowerCase();
+    // talk = agent leg (what they actually said); life = whole call incl. IVR/hold.
+    // Rows that reached an agent are judged on talk; abandons on how long the
+    // caller hung on before giving up.
+    const talk = talkSeconds(c);
+    const life = lifeSeconds(c);
+    const dur  = c.target_name ? talk : life;
+    const s    = (c.status || '').toLowerCase();
 
     let outcome, pillCls;
-    if (LIVE_S.has(s))                   { outcome = c.target_name || 'Live'; pillCls = 'connected'; }
-    else if (c.target_name && dur >= 30) { outcome = c.target_name;            pillCls = 'connected'; }
-    else if (c.target_name)              { outcome = `${c.target_name} (${dur}s)`; pillCls = 'short'; }
-    else if (MISSED_S.has(s))            { outcome = 'Missed';                 pillCls = 'missed'; }
-    else if (dur > 0 && dur < 10)        { outcome = `Hung up (${dur}s)`;       pillCls = 'short'; }
-    else                                  { outcome = c.status || '—';          pillCls = 'missed'; }
+    if (LIVE_S.has(s))                    { outcome = c.target_name || 'Live'; pillCls = 'connected'; }
+    else if (c.target_name && talk >= 30) { outcome = c.target_name;            pillCls = 'connected'; }
+    else if (c.target_name)               { outcome = `${c.target_name} (${talk}s)`; pillCls = 'short'; }
+    else if (MISSED_S.has(s))             { outcome = 'Missed';                 pillCls = 'missed'; }
+    else if (life > 0 && life < 10)       { outcome = `Hung up (${life}s)`;      pillCls = 'short'; }
+    else                                   { outcome = c.status || '—';          pillCls = 'missed'; }
 
     const cb = c._callback
       ? '<span class="acp-cb-yes">✓ Yes</span>'
