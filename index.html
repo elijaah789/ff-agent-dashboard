@@ -1990,29 +1990,66 @@ async function fetchTargetCaps() {
   }
 }
 
-// Daily call quota = sum of every agent's Retreaver Daily cap, EXCLUDING agents
-// left unlimited (∞) — those have no quota so they're skipped, per the ask.
-// "Filled" = Retreaver's own Daily `filled` (60s-connected calls, the same count
-// the per-row "Daily cap" column shows) summed over those SAME capped agents, so
-// numerator and denominator stay apples-to-apples. This is a TODAY metric:
-// Retreaver resets `filled` at midnight Arizona time, so it ignores the date
-// range picker (which only re-slices the call history above).
+// Targets that carry a Daily cap but are NOT one of our phone agents. Their cap
+// is a routing ceiling for a resale/overflow leg, so folding it into the roster's
+// quota just inflates the bar with capacity no agent was ever going to fill
+// (139820 alone was 165 of a 409 denominator — 40% dead weight).
+const NON_AGENT_TARGET_IDS = new Set([139820]);   // "Eterna" buyer/overflow route
+
+// Daily call quota = CAPACITY WE ACTUALLY HAD TODAY, filled against.
+//
+// Denominator = sum of the Retreaver Daily cap of every agent who was on the
+// phones today. Three exclusions, each for a different reason:
+//   1. Unlimited (∞) agents — no cap means no quota to fulfil, nothing to sum.
+//   2. Non-agent targets (NON_AGENT_TARGET_IDS) — not our roster.
+//   3. Agents who sat out the whole day — see the paused rule below.
+//
+// The paused rule is the subtle one. `paused` is a LIVE flag the worker cron
+// folds three states into: Dialpad-away, a HELD override, and CAPPED. That last
+// one matters — an agent who FILLS their cap is auto-paused, so a naive "skip
+// paused" would delete exactly the agents who succeeded (2026-08-08: Christopher
+// was paused at 12/12; dropping him took the numerator from 13 to 2). So an
+// agent only leaves the count when paused AND still at zero — i.e. never worked.
+// Taking even one call pins them in for the rest of the day, which also keeps
+// the metric monotonic: it can climb as the day goes on, never retreat.
+//
+// Known transient: "worked today" reads Retreaver's `filled`, and that counter
+// starts at 0 the moment a cap is CREATED — calls taken before the cap existed
+// don't register. So an agent newly capped mid-day, who then pauses, drops out
+// for the rest of that day even though they worked. Self-corrects at the midnight
+// Arizona reset; not worth reconciling against the call list here, because that
+// list follows the date-range picker while this card is always TODAY.
+//
+// "Filled" = Retreaver's own Daily `filled` (60s TALK-time conversions, same as
+// the per-row "Daily cap" column) over those SAME agents, so numerator and
+// denominator stay apples-to-apples. TODAY-only metric: Retreaver resets `filled`
+// at midnight Arizona, so it ignores the date range picker (which only re-slices
+// the call history above).
 function renderQuota() {
   const el = document.getElementById('mQuota');
   if (!el) return;
-  let quota = 0, filled = 0, capped = 0;
-  Object.values(targetCaps).forEach(c => {
-    if (c && c.daily != null) {          // finite cap only — unlimited (null) skipped
-      quota  += c.daily;
-      filled += (c.dailyFilled || 0);
-      capped++;
+  let quota = 0, filled = 0, counted = 0, idle = 0, satOut = 0, satOutCap = 0;
+  Object.entries(targetCaps).forEach(([id, c]) => {
+    if (!c || c.daily == null) return;                   // unlimited (∞) — no quota to fulfil
+    if (NON_AGENT_TARGET_IDS.has(Number(id))) return;    // not one of our agents
+    const worked = (c.dailyFilled || 0) > 0;
+    if (c.paused && !worked) {                           // off the phones all day, zero calls
+      satOut++; satOutCap += c.daily;
+      return;
     }
+    quota  += c.daily;
+    filled += (c.dailyFilled || 0);
+    counted++;
+    if (!worked) idle++;                                 // available, hasn't converted one yet
   });
   const card = el.closest('.mc');
-  if (!quota) {                          // nobody has a finite cap → nothing to fulfil
+  if (!quota) {                          // nobody available and nobody has worked yet
     el.textContent = '—';
     el.style.color = '';
-    if (card) card.title = 'No daily caps set — every agent is unlimited (nothing to count).';
+    if (card) card.title = satOut
+      ? `No capped agent has been available yet today — ${satOut} agent${satOut!==1?'s':''} ` +
+        `(${satOutCap} calls of capacity) paused with zero calls. Release a hold to start the day.`
+      : 'No daily caps set — every agent is unlimited (nothing to count).';
     return;
   }
   const pct = Math.round((filled / quota) * 100);
@@ -2020,9 +2057,14 @@ function renderQuota() {
   // Green once the day's quota is fully filled, otherwise leave the card's blue.
   el.style.color = filled >= quota ? 'var(--green, #4caf50)' : '';
   if (card) card.title =
-    `Daily call quota — sum of every capped agent's daily cap (${capped} capped agent${capped!==1?'s':''}; ` +
-    `unlimited agents excluded). ${filled} of ${quota} filled today (${pct}%), ${Math.max(quota-filled,0)} to go. ` +
-    `Counts Retreaver's 60s-connected Daily "filled"; resets midnight Arizona — not affected by the date range.`;
+    `Daily call quota — capacity we actually had today, and how much of it filled. ` +
+    `${filled} of ${quota} filled (${pct}%), ${Math.max(quota-filled,0)} to go, across ` +
+    `${counted} agent${counted!==1?'s':''} who worked or are available` +
+    (idle ? ` (${idle} available, no 60s call yet)` : '') + `. ` +
+    (satOut ? `Excludes ${satOut} agent${satOut!==1?'s':''} paused all day with zero calls ` +
+              `(${satOutCap} calls of capacity not counted against you) — ` : 'Excludes ') +
+    `plus unlimited (∞) agents, who have no cap to fill. ` +
+    `Counts Retreaver's Daily "filled" (60s of TALK time); resets midnight Arizona — not affected by the date range.`;
 }
 
 // ─── Durable force-pause: KV overrides on every target ──────────────────────
