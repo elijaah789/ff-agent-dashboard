@@ -260,6 +260,7 @@
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
     <div class="mc g"><div class="ml">Available now</div> <div class="mv g" id="mAvail">—</div></div>
     <div class="mc b"><div class="ml">Daily quota</div>   <div class="mv b" id="mQuota">—</div></div>
+    <div class="mc a"><div class="ml">Eterna quota</div>  <div class="mv a" id="mQuotaEterna">—</div></div>
   </div>
 
   <div class="spend-strip" id="cohortStrip">
@@ -1190,6 +1191,7 @@ function processCalls(calls, start, end, opts) {
   document.getElementById('mRate').textContent       = rate + '%';
   document.getElementById('mAgents').textContent     = allAgents.length;
   renderQuota(); // daily cap fulfilment vs live filled (excludes unlimited agents)
+  renderEternaQuota(); // same, for the Eterna fanout route metered on its own
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString([], {timeZone:AZ_TZ})} AZ`;
 
   // Feed the conversion tracker with the Retreaver answered total for this range.
@@ -1983,6 +1985,7 @@ async function fetchTargetCaps() {
     console.log('Target caps loaded:', Object.keys(targetCaps).length);
     renderAvailability();
     renderQuota();
+    renderEternaQuota();
     // Re-render presence strip — pills depend on targetCaps for Capped/Held state
     updateDialpadBar();
   } catch(e) {
@@ -1995,6 +1998,7 @@ async function fetchTargetCaps() {
 // quota just inflates the bar with capacity no agent was ever going to fill
 // (139820 alone was 165 of a 409 denominator — 40% dead weight).
 const NON_AGENT_TARGET_IDS = new Set([139820]);   // "Eterna" buyer/overflow route
+const ETERNA_TARGET_ID = 139820;                  // same route, metered on its own card
 
 // Daily call quota = CAPACITY WE ACTUALLY HAD TODAY, filled against.
 //
@@ -2064,6 +2068,52 @@ function renderQuota() {
     (satOut ? `Excludes ${satOut} agent${satOut!==1?'s':''} paused all day with zero calls ` +
               `(${satOutCap} calls of capacity not counted against you) — ` : 'Excludes ') +
     `plus unlimited (∞) agents, who have no cap to fill. ` +
+    `Counts Retreaver's Daily "filled" (60s of TALK time); resets midnight Arizona — not affected by the date range.`;
+}
+
+// Eterna quota — the ONE Retreaver target (139820) that fans out to the whole
+// Eterna side, metered on its own card so it never distorts the FF roster bar.
+//
+// Why it can't just join the FF card: 139820 is a single routing leg, not an
+// agent. Its cap (164) is a ceiling on the whole cohort, so folding it in made
+// the FF denominator 165 of 409 — see NON_AGENT_TARGET_IDS. And the individual
+// Eterna agents are NOT targets in this Retreaver company (the 51 per-agent
+// targets were deleted 2026-07-13); they reach the dashboard through Dialpad
+// account 2 via /dialpad/eterna-agents, which carries no caps at all. So this
+// route's own filled/cap is the only Eterna capacity number that exists.
+//
+// Same semantics as the FF card: "filled" is Retreaver's Daily `filled` (60s of
+// TALK time), resets midnight Arizona, ignores the date-range picker.
+function renderEternaQuota() {
+  const el = document.getElementById('mQuotaEterna');
+  if (!el) return;
+  const c = targetCaps[ETERNA_TARGET_ID];
+  const card = el.closest('.mc');
+  if (!c) {                                    // caps not loaded, or target gone
+    el.textContent = '—';
+    el.style.color = '';
+    if (card) card.title = `Eterna route (target ${ETERNA_TARGET_ID}) not in the Retreaver target list — caps still loading, or the target was removed.`;
+    return;
+  }
+  const filled = c.dailyFilled || 0;
+  if (c.daily == null) {                       // unlimited — no quota to fulfil
+    el.textContent = `${filled}/∞`;
+    el.style.color = '';
+    if (card) card.title =
+      `Eterna route — no Daily cap set, so there is no quota to fill. ` +
+      `${filled} call${filled!==1?'s':''} converted today (60s of TALK time).` +
+      (c.paused ? ' Route is PAUSED right now.' : '');
+    return;
+  }
+  const pct = Math.round((filled / c.daily) * 100);
+  el.textContent = `${filled}/${c.daily}`;
+  el.style.color = filled >= c.daily ? 'var(--green, #4caf50)' : '';
+  if (card) card.title =
+    `Eterna quota — the Eterna fanout route's own Daily cap (target ${ETERNA_TARGET_ID}). ` +
+    `${filled} of ${c.daily} filled (${pct}%), ${Math.max(c.daily-filled,0)} to go. ` +
+    (c.paused ? `Route is PAUSED right now — ${filled >= c.daily ? 'it filled its cap (auto-pause)' : 'held or unavailable'}. ` : '') +
+    `Kept off the FF "Daily quota" card because this is one routing leg for the whole ` +
+    `cohort, not a roster agent — per-agent Eterna caps do not exist in Retreaver. ` +
     `Counts Retreaver's Daily "filled" (60s of TALK time); resets midnight Arizona — not affected by the date range.`;
 }
 
