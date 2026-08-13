@@ -537,6 +537,41 @@ const dialpadUserIdToName = {}; // populated from /dialpad/users — Dialpad use
 const targetIdToName = {};   // populated from /retreaver/targets — call.system_target_id → target.name
 const targetIdToPhone = {};  // populated from /retreaver/targets — for Dialpad matching
 
+// ─── Cohort: which team owns a call ──────────────────────────────────────────
+// Identify Eterna by TARGET (id, then name) — NOT by phone number. The old
+// number-only rule broke silently when Retreaver target 139820's DID moved
+// 858-742-2352 → 714-586-8601: every Eterna call fell through to 'ff', so the
+// Eterna row of the cohort table read 0 while its volume inflated the
+// Financially Fluent row. Target ids and names survive DID swaps — this account
+// renames targets and never recreates them (see the agent-swap rule).
+const ETERNA_TARGET_IDS = new Set([139820]);        // "Eterna" buyer/overflow route
+// Numbers that have carried Eterna traffic. Only consulted for calls Retreaver
+// never assigned a target to (missed / no-answer rows have a dialed number but
+// no system_target_id), so a DID swap here degrades one metric, not the split.
+const ETERNA_NUMBERS = new Set(['8587422352', '7145868601']);
+function isEternaTarget(targetId, name) {
+  if (targetId != null && ETERNA_TARGET_IDS.has(Number(targetId))) return true;
+  return /^eterna\b/i.test(String(name || '').trim());
+}
+function cohortOfNumber(num) {
+  const d = String(num || '').replace(/\D/g, '').slice(-10);
+  // 949 = the per-agent Eterna DIDs (targets deleted 2026-07-13; kept so ranges
+  // that predate the deletion still split correctly).
+  return (ETERNA_NUMBERS.has(d) || d.slice(0, 3) === '949') ? 'eterna' : 'ff';
+}
+// Cohort of one Retreaver call record. target_name rides on the call itself, so
+// this classifies correctly even before /retreaver/targets has loaded.
+function cohortOfCall(call) {
+  const sid = call.system_target_id;
+  const name = call.target_name || (sid != null ? targetIdToName[sid] : '');
+  return isEternaTarget(sid, name) ? 'eterna' : cohortOfNumber(call.dialed_number);
+}
+// Cohort of a known target that had no calls in the window.
+function cohortOfTarget(targetId) {
+  return isEternaTarget(targetId, targetIdToName[targetId])
+    ? 'eterna' : cohortOfNumber(targetIdToPhone[targetId]);
+}
+
 // Admin overrides — keyed by Retreaver target id; value 'paused' or 'active'.
 // Backed by KV on the worker so they persist across browsers/devices and
 // the cron handler can enforce them even when no dashboard tab is open.
@@ -574,10 +609,12 @@ async function authedFetch(path, init) {
     'X-Spend-Pass': SPEND_PASS,
   });
   // Hard client-side timeout so a stalled worker/upstream can never freeze the UI
-  // indefinitely. Set above the worker's own ~20s timeout+retry ceiling so we don't
-  // abort a valid in-flight retry. On abort, fetch() throws AbortError → caller retries.
+  // indefinitely. Default sits above the worker's own ~20s timeout+retry ceiling so
+  // we don't abort a valid in-flight retry. On abort, fetch() throws AbortError →
+  // caller retries. Callers that legitimately run longer (the whole-range scan in
+  // fetchCallsRange, ~30s cold) pass their own opts.timeoutMs.
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 25000);
+  const timer = setTimeout(() => ctl.abort(), opts.timeoutMs || 25000);
   let res;
   try {
     res = await fetch(WORKER_URL + path, Object.assign({}, opts, { headers, signal: ctl.signal }));
@@ -697,7 +734,52 @@ function onCustomDate() {
   fetchData();
 }
 
-// ─── Retreaver: fetch all pages ───────────────────────────────────────────────
+// ─── Retreaver: whole-range fetch via the worker ──────────────────────────────
+// One request for the entire window. Returns the same {calls,start,end,partial}
+// shape fetchAllPages() produces, or null if the endpoint isn't available (older
+// worker → 404) or failed, in which case the caller falls back to the page walk.
+// Client-side Arizona-day trimming happens here exactly as it does per-page, so
+// the ±1-day API padding never leaks extra days into the totals.
+async function fetchCallsRange(apiStart, apiEnd, start, end, prog) {
+  const startMs = new Date(start + 'T00:00:00' + AZ_OFFSET).getTime();
+  const endMs   = new Date(end   + 'T23:59:59' + AZ_OFFSET).getTime();
+  prog.textContent = 'Loading calls for the selected range...';
+  let res;
+  try {
+    res = await authedFetch(`/retreaver/calls-range?start=${apiStart}&end=${apiEnd}`, { timeoutMs: 120000 });
+  } catch (e) {
+    console.warn('calls-range failed, falling back to page walk:', e.message);
+    return null;
+  }
+  if (!res.ok) {
+    console.warn(`calls-range HTTP ${res.status} — falling back to page walk`);
+    return null;
+  }
+  let json;
+  try { json = await res.json(); } catch { return null; }
+  if (!json || !Array.isArray(json.calls)) return null;
+
+  const seen = new Set();
+  const calls = json.calls.filter(c => {
+    const key = c.uuid || ((c.caller || c.start_time) ? `${c.caller || ''}|${c.start_time || ''}` : null);
+    if (key) { if (seen.has(key)) return false; seen.add(key); }
+    if (!c.start_time) return true;
+    const t = new Date(c.start_time).getTime();
+    return t >= startMs && t <= endMs;
+  });
+
+  document.getElementById('rawBox').textContent = JSON.stringify(json.calls.slice(0, 5), null, 1).slice(0, 6000);
+  // `truncated` = the worker could not complete some chunk. Surface it rather
+  // than quietly rendering an undercount as if it were the whole range.
+  document.getElementById('pageInfo').textContent =
+    `${calls.length.toLocaleString()} calls · ${json.chunks} chunk${json.chunks === 1 ? '' : 's'}` +
+    ` (${json.cached_chunks} cached)` +
+    (json.truncated ? ' · ⚠ INCOMPLETE — some of the range could not be read' : '');
+
+  return { calls, start, end, partial: !!json.truncated };
+}
+
+// ─── Retreaver: fetch all pages (fallback) ────────────────────────────────────
 // Pad API window by ±1 day. The Retreaver API treats start/end as UTC midnights,
 // but an Arizona day spans 2 UTC dates (Phoenix evening is already next-day UTC).
 // Without padding, calls in the Arizona "today" that cross into the next UTC day
@@ -709,6 +791,15 @@ async function fetchAllPages() {
   const apiEnd   = shiftYMD(end,   +1);
   const prog = document.getElementById('prog');
   prog.style.display = 'block';
+
+  // Preferred path: let the worker walk the range. Walking pages from the browser
+  // means ~90 sequential round-trips for a 2-week range (~2 min) and ~90 hits on
+  // an API key Retreaver throttles account-wide — one 5xx mid-walk blanked the
+  // dashboard with "Connection error". /retreaver/calls-range does the whole walk
+  // server-side in 2-day chunks and KV-caches closed ones: ~30s cold, <1s warm.
+  // The page loop below stays as the fallback for an old/undeployed worker.
+  const ranged = await fetchCallsRange(apiStart, apiEnd, start, end, prog);
+  if (ranged) { prog.style.display = 'none'; return ranged; }
 
   let all = [], page = 1, partial = false;
   const seenKeys = new Set(); // dedupe across pages — live pagination shift / mixed fresh+snapshot pages repeat rows
@@ -953,9 +1044,7 @@ function processCalls(calls, start, end, opts) {
   const notSoldSeen = new Set(); // dedupe by caller number
   const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
   const uniqueFF = new Set(), uniqueEterna = new Set(); // per-cohort distinct callers
-  // Cohort by phone: the Eterna buyer line +18587422352 (target 139820) = Eterna
-  // (individual 949 agent targets all deleted 2026-07-13); everything else (435 FF agents) = FF.
-  const cohortOf = (num) => { const d = String(num||'').replace(/\D/g,'').slice(-10); return (d === '8587422352' || d.slice(0,3) === '949') ? 'eterna' : 'ff'; };
+  // Cohort split is target-based — see cohortOfCall / cohortOfTarget above.
 
   const callerCount = {};
   calls.forEach(call => {
@@ -1023,7 +1112,7 @@ function processCalls(calls, start, end, opts) {
       answered:0, live:0, dur:0,
       receivable:0, longCalls:0, outbound:0, calls:[],
       dialedNumber: normalizePhone(call.dialed_number || ''),
-      cohort: cohortOf(call.dialed_number)
+      cohort: cohortOfCall(call)
     };
 
     const a   = agents[agentKey];
@@ -1085,7 +1174,7 @@ function processCalls(calls, start, end, opts) {
   calls.forEach(c => {
     if (!c._missed) return;
     const k = c.caller || c.uuid;
-    if (!_missedCohort.has(k)) _missedCohort.set(k, cohortOf(c.dialed_number) === 'eterna' ? 'eterna' : 'ff');
+    if (!_missedCohort.has(k)) _missedCohort.set(k, cohortOfCall(c));
   });
   _missedCohort.forEach((coh, k) => missedByCoh[coh].add(k));
 
@@ -1103,7 +1192,7 @@ function processCalls(calls, start, end, opts) {
         answered:0, live:0, dur:0,
         receivable:0, longCalls:0, outbound:0, calls:[],
         dialedNumber: targetIdToPhone[targetId] || '',
-        cohort: cohortOf(targetIdToPhone[targetId])
+        cohort: cohortOfTarget(targetId)
       };
     }
   });
