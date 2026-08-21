@@ -170,7 +170,8 @@
   #eternaAdPanel tbody tr.fresh td { background:rgba(0,229,160,0.05); }
   #eternaAdPanel td.num { font-family:var(--font-mono); font-size:12px; color:var(--text); letter-spacing:0.02em; }
   #eternaAdPanel .src-ads { color:var(--accent); }
-  #eternaAdPanel .src-rtv { color:var(--purple); }
+  #eternaAdPanel .src-retreaver { color:var(--purple); }
+  #eternaAdPanel .src-direct { color:var(--muted); }
   .acp-cb-yes { color:var(--accent); font-weight:600; }
   .acp-cb-no  { color:var(--muted); }
   .detail-inner { padding:12px 16px 16px 40px; }
@@ -455,6 +456,7 @@
     <div class="etad-bar">
       <span class="etad-chip active" id="etadTabAds"  onclick="setEternaAdFilter('ads')">Ad line</span>
       <span class="etad-chip"        id="etadTabRtv"  onclick="setEternaAdFilter('retreaver')">Purchased leads</span>
+      <span class="etad-chip"        id="etadTabDir"  onclick="setEternaAdFilter('direct')">Direct dials</span>
       <span class="etad-chip"        id="etadTabAll"  onclick="setEternaAdFilter('all')">All</span>
       <span class="etad-spacer"></span>
       <span class="etad-btn" onclick="copyEternaAdNumbers()">Copy numbers</span>
@@ -2539,10 +2541,11 @@ async function loadEternaAdCallers(start, end, gen) {
   }
 }
 
+const ETAD_TABS = { ads: 'etadTabAds', retreaver: 'etadTabRtv', direct: 'etadTabDir', all: 'etadTabAll' };
 function setEternaAdFilter(f) {
   eternaAdFilter = f;
-  ['ads', 'retreaver', 'all'].forEach(k => {
-    const el = document.getElementById(k === 'ads' ? 'etadTabAds' : k === 'retreaver' ? 'etadTabRtv' : 'etadTabAll');
+  Object.keys(ETAD_TABS).forEach(k => {
+    const el = document.getElementById(ETAD_TABS[k]);
     if (el) el.classList.toggle('active', k === f);
   });
   renderEternaAdPanel();
@@ -2576,12 +2579,12 @@ function renderEternaAdPanel() {
   if (noteEl) {
     const bits = [];
     if (t.google_phone_calls != null) {
-      bits.push(`Google counted <strong>${t.google_phone_calls}</strong> ad calls for this range (strict lower bound); this list is the upper bound — it also contains anyone who direct-dialled an agent, because Dialpad doesn't record which DID was dialled.`);
-    } else {
-      bits.push(`Upper bound: also contains direct dials to an agent's own number — Dialpad doesn't record which DID was dialled.`);
+      bits.push(`Google counted <strong>${t.google_phone_calls}</strong> ad calls for this range (strict lower bound).`);
     }
+    bits.push(`"Ad line" = came in on the main line (Policy Help Desk, 949-787-5208) with no Retreaver match. ${t.unique_direct_callers || 0} caller${(t.unique_direct_callers || 0) === 1 ? '' : 's'} who dialled an agent's own number instead — callbacks and saved numbers — are under <em>Direct dials</em>, not here.`);
+    bits.push(`Still an upper bound: the ad number and the purchased-lead number forward into the same Dialpad department, so only the Retreaver match separates them, and a caller who saved 579-7090 from an older ad is indistinguishable from a fresh click.`);
     if (t.unique_retreaver_callers) {
-      bits.push(`${t.unique_retreaver_callers} caller${t.unique_retreaver_callers === 1 ? '' : 's'} matched Eterna Retreaver (purchased leads on 888-691-4676 / 858-742-2352) and ${eternaAdFilter === 'ads' ? 'are excluded here' : 'are tagged separately'}.`);
+      bits.push(`${t.unique_retreaver_callers} caller${t.unique_retreaver_callers === 1 ? '' : 's'} matched Eterna Retreaver (purchased leads on 888-691-4676) and ${eternaAdFilter === 'ads' ? 'are excluded here' : 'are tagged separately'}.`);
     }
     if (t.dropped_bridge || t.dropped_internal) {
       bits.push(`Dropped ${t.dropped_bridge || 0} vendor-bridge and ${t.dropped_internal || 0} internal-transfer event${(t.dropped_internal || 0) === 1 ? '' : 's'}.`);
@@ -2640,7 +2643,7 @@ function renderEternaAdPanel() {
       <td>${c.last_agent ? esc(c.last_agent) : '<span style="color:var(--muted);">—</span>'}</td>
       <td class="r">${fmtDur(c.longest_s || 0)}</td>
       <td class="r">${fmtDur(c.talk_s || 0)}</td>
-      <td class="${c.source === 'ads' ? 'src-ads' : 'src-rtv'}" style="font-family:var(--font-mono);font-size:10px;">${c.source === 'ads' ? 'AD LINE' : 'PURCHASED'}</td>
+      <td class="src-${esc(c.source)}" style="font-family:var(--font-mono);font-size:10px;">${c.source === 'ads' ? 'AD LINE' : c.source === 'retreaver' ? 'PURCHASED' : 'DIRECT'}</td>
     </tr>`;
   });
 
