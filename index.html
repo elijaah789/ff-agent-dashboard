@@ -2509,6 +2509,7 @@ async function loadAdSpend(rangeStart, rangeEnd, gen) {
 // for the range is shown next to it as the strict lower bound.
 let eternaAdData   = null;   // last /eterna/ad-callers payload
 let eternaAdFilter = 'ads';  // 'ads' | 'retreaver' | 'all'
+let etadCopyTimer  = null;   // pending "copied N" restore, so clicks can't stack
 
 async function loadEternaAdCallers(start, end, gen) {
   const body = document.getElementById('eternaAdBody');
@@ -2559,7 +2560,12 @@ function renderEternaAdPanel() {
   const noteEl = document.getElementById('eternaAdNote');
   if (!body) return;
   const d = eternaAdData;
-  if (!d) { body.innerHTML = '<p class="no-data" style="padding:16px;">No data.</p>'; return; }
+  if (!d) {
+    body.innerHTML = '<p class="no-data" style="padding:16px;">Loading…</p>';
+    if (countEl) countEl.textContent = '—';
+    if (noteEl) noteEl.innerHTML = '';
+    return;
+  }
   const t = d.totals || {};
 
   if (countEl) {
@@ -2581,13 +2587,14 @@ function renderEternaAdPanel() {
       bits.push(`Dropped ${t.dropped_bridge || 0} vendor-bridge and ${t.dropped_internal || 0} internal-transfer event${(t.dropped_internal || 0) === 1 ? '' : 's'}.`);
     }
     if (d.retreaver_ok === false) {
-      bits.push(`<span class="warn">⚠ The Retreaver subtract failed — purchased-lead callers are NOT filtered out of this list right now.</span>`);
+      bits.push(`<span class="warn">⚠ The Retreaver subtract failed${d.retreaver_reason ? ' (' + esc(d.retreaver_reason) + ')' : ''} — purchased-lead callers are NOT filtered out of this list, so it is inflated by purchased-lead traffic.</span>`);
     }
-    if (d.truncated) {
-      const partial = Object.values(d.day_sources || {}).some(v => v === 'accumulator_partial');
-      bits.push(partial
-        ? `<span class="warn">⚠ The live caller store started part-way through this day, so calls before that point are missing. Days that start clean are complete.</span>`
-        : `<span class="warn">⚠ Dialpad scan incomplete for part of this range — this is a partial view. It fills in on the next refresh.</span>`);
+    const miss = (d.days_missing || []), part = (d.days_partial || []);
+    if (miss.length) {
+      bits.push(`<span class="warn">⚠ ${miss.length} day${miss.length === 1 ? '' : 's'} in this range contribute nothing — the live caller store keeps 8 days and backfills one older day at a time (${esc(miss.slice(0, 4).join(', '))}${miss.length > 4 ? '…' : ''}).</span>`);
+    }
+    if (part.length) {
+      bits.push(`<span class="warn">⚠ ${part.length} day${part.length === 1 ? '' : 's'} only partly read so far (${esc(part.join(', '))}) — the cron is still closing the gap.</span>`);
     }
     const age = d.recent_age_s != null ? d.recent_age_s : d.age_s;
     if (age != null) bits.push(`Data age ${age < 90 ? age + 's' : Math.round(age / 60) + 'm'}.`);
@@ -2655,7 +2662,16 @@ function copyEternaAdNumbers() {
   if (!rows.length) return;
   const text = rows.map(c => '+1' + c.phone).join('\n');
   navigator.clipboard.writeText(text)
-    .then(() => { const el = document.getElementById('eternaAdCount'); if (el) { const old = el.textContent; el.textContent = `copied ${rows.length}`; setTimeout(() => { el.textContent = old; }, 1500); } })
+    .then(() => {
+      const el = document.getElementById('eternaAdCount');
+      if (!el) return;
+      // Single shared timer: two quick clicks used to queue two restores, the
+      // second of which put "copied N" back permanently. Restore by re-rendering
+      // from the data, never from captured text.
+      if (etadCopyTimer) clearTimeout(etadCopyTimer);
+      el.textContent = `copied ${rows.length}`;
+      etadCopyTimer = setTimeout(() => { etadCopyTimer = null; renderEternaAdPanel(); }, 1500);
+    })
     .catch(e => alert('Copy failed: ' + e.message));
 }
 
@@ -2956,7 +2972,7 @@ async function fetchData() {
   // closed/eterna/spend numbers while the async loaders refill them.
   convClosed = null; convRetrAnswered = null; convEternaAnswered = null;
   convEternaAgents = []; convDealsByAgent = {};
-  eternaAdData = null;
+  eternaAdData = null; renderEternaAdPanel();   // clear the old range's rows immediately
   lastRangeSpend = null; renderCPL();   // '—' until this range's spend query lands
 
   // Independent loaders — spend (Google Ads), deals (GHL), Eterna attribution
@@ -2972,10 +2988,9 @@ async function fetchData() {
     convEternaAnswered = (d && !d.truncated) ? (d.answered_calls || 0) : null;
     convEternaAgents   = (d && d.agents) || [];
     renderConversion();
-    // Eterna Google Ads caller board. Chained, not parallel: /eterna/ad-callers
-    // reuses the very aggregate this call just built (same KV key), so running
-    // them side by side would kick off two full-day Dialpad scans whenever the
-    // cron-warmed cache is cold. By here it is warm.
+    // Eterna Google Ads caller board. Reads the cron-built day accumulator, so
+    // it never paginates Dialpad on the request path and returns in well under a
+    // second. Chained here only to keep it off the calls-feed critical path.
     loadEternaAdCallers(start, end, gen);
   });
   loadAdSpend(start, end, gen);   // account spend — worker KV-caches 15 min
