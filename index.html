@@ -171,6 +171,8 @@
   #eternaAdPanel td.num { font-family:var(--font-mono); font-size:12px; color:var(--text); letter-spacing:0.02em; }
   #eternaAdPanel td.miss { font-family:var(--font-mono); font-size:12px; color:var(--red); font-weight:600; }
   #eternaAdPanel td.miss.zero { color:var(--muted); font-weight:400; }
+  #eternaAdPanel .acp-pill.oncall { background:rgba(96,165,250,0.14); color:var(--blue); }
+  #eternaAdPanel tr.oncall td { background:rgba(96,165,250,0.04); }
   #eternaAdPanel .miss-tag { font-family:var(--font-mono); font-size:9px; color:var(--amber); margin-left:4px; letter-spacing:0.04em; }
   .acp-count.miss { color:var(--red); background:rgba(239,68,68,0.08); margin-left:6px; }
   #eternaAdPanel .src-ads { color:var(--accent); }
@@ -2646,6 +2648,12 @@ function renderEternaAdPanel() {
       m += `. ${t.unique_ad_callers_never_reached || 0} unique number${(t.unique_ad_callers_never_reached || 0) === 1 ? '' : 's'} got nobody on any attempt.`;
       bits.push(m);
     }
+    // Dialpad publishes nothing about a call until it hangs up, so a live call
+    // reaches us as a ring with no answer. Saying so is the difference between
+    // "we are still watching this" and a wrong missed-call count.
+    if (t.ad_in_progress) {
+      bits.push(`<strong>${t.ad_in_progress}</strong> call${t.ad_in_progress === 1 ? ' is' : 's are'} on the phone right now and <em>not</em> counted as missed — Dialpad reveals a call only once it ends, so the answer lands a minute or two after hang-up and the row flips itself to answered.`);
+    }
     if (d.legacy_missed_events) {
       bits.push(`<span class="warn">⚠ ${d.legacy_missed_events} missed call${d.legacy_missed_events === 1 ? '' : 's'} in this range were recorded before the miss breakdown shipped — their missed totals are right, but "rang no one" and the voicemail count are floors for those days, and days already closed by then also miss the ~1.6% of calls that rang nobody at all.</span>`);
     }
@@ -2696,18 +2704,24 @@ function renderEternaAdPanel() {
   </tr></thead><tbody>`;
 
   rows.forEach((c, i) => {
-    const missed = c.answered === 0;
+    const live = (c.in_progress || 0) > 0;
+    const missed = c.answered === 0 && !live;
     const nMissed = etadMissed(c);
     // Why the miss happened, when the row can say. "no ring" is the actionable
     // one; "vm" means the caller cared enough to leave a message.
     const tags = [];
     if (c.no_ring) tags.push(`<span class="miss-tag" title="rang no agent at all">no ring×${c.no_ring}</span>`);
     if (c.voicemails) tags.push(`<span class="miss-tag" title="caller left a voicemail">vm×${c.voicemails}</span>`);
-    const pill = missed
+    // "On call" outranks both: Dialpad hides a call until it hangs up, so a ring
+    // with no visible answer is usually an agent mid-conversation, not a miss.
+    const pill = live
+      ? `<span class="acp-pill oncall">on call now</span>`
+      : missed
       ? '<span class="acp-pill missed">missed</span>'
       : `<span class="acp-pill connected">${c.answered}/${c.attempts} answered</span>`;
     // Arrived in the last 5 minutes — the "look at this now" row.
-    const fresh = (now - (c.last_ms || 0)) < 300000 ? ' class="fresh"' : '';
+    const fresh = live ? ' class="oncall"'
+                : (now - (c.last_ms || 0)) < 300000 ? ' class="fresh"' : '';
     html += `<tr${fresh}>
       <td class="r" style="color:var(--muted);">${i + 1}</td>
       <td class="num"><a href="tel:+1${esc(c.phone)}" style="color:inherit;text-decoration:none;border-bottom:1px dotted var(--border2);">${esc(fmtPhoneE164(c.phone))}</a></td>
@@ -2729,11 +2743,12 @@ function renderEternaAdPanel() {
   const totalAns = rows.reduce((s, c) => s + (c.answered || 0), 0);
   const totalMissed = rows.reduce((s, c) => s + etadMissed(c), 0);
   const totalNoRing = rows.reduce((s, c) => s + (c.no_ring || 0), 0);
+  const totalLive = rows.reduce((s, c) => s + (c.in_progress || 0), 0);
   html += `</tbody><tfoot><tr class="deals-total">
     <td colspan="5" style="font-family:var(--font-mono);font-size:11px;">${rows.length} unique number${rows.length === 1 ? '' : 's'}</td>
     <td class="r">${totalCalls}</td>
     <td class="r" style="color:var(--red);">${totalMissed}${totalNoRing ? `<span class="miss-tag">no ring×${totalNoRing}</span>` : ''}</td>
-    <td colspan="2" style="font-family:var(--font-mono);font-size:11px;">${totalAns} answered${totalCalls ? ` · ${Math.round((totalMissed / totalCalls) * 100)}% missed` : ''}</td>
+    <td colspan="2" style="font-family:var(--font-mono);font-size:11px;">${totalAns} answered${totalCalls ? ` · ${Math.round((totalMissed / totalCalls) * 100)}% missed` : ''}${totalLive ? ` · ${totalLive} on call` : ''}</td>
     <td></td>
     <td class="r">${fmtDur(totalTalk)}</td><td></td>
   </tr></tfoot></table>`;
@@ -2762,11 +2777,11 @@ function exportEternaAdCsv() {
   const rows = eternaAdRows();
   if (!rows.length) return;
   const iso = (ms) => ms ? new Date(ms).toISOString() : '';
-  const head = 'phone,area,source,first_call_utc,last_call_utc,calls,answered,missed,missed_no_ring,voicemails,longest_s,total_talk_s,answered_by';
+  const head = 'phone,area,source,first_call_utc,last_call_utc,calls,answered,missed,missed_no_ring,voicemails,in_progress,longest_s,total_talk_s,answered_by';
   const body = rows.map(c => [
     '+1' + c.phone, c.area || '', c.source, iso(c.first_ms), iso(c.last_ms),
     c.attempts, c.answered, etadMissed(c), c.no_ring || 0, c.voicemails || 0,
-    c.longest_s || 0, c.talk_s || 0,
+    c.in_progress || 0, c.longest_s || 0, c.talk_s || 0,
     '"' + String(c.last_agent || '').replace(/"/g, '""') + '"',
   ].join(','));
   const blob = new Blob([[head].concat(body).join('\n')], { type: 'text/csv' });
