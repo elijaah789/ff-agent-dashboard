@@ -169,6 +169,10 @@
   .etad-note .warn { color:var(--amber); }
   #eternaAdPanel tbody tr.fresh td { background:rgba(0,229,160,0.05); }
   #eternaAdPanel td.num { font-family:var(--font-mono); font-size:12px; color:var(--text); letter-spacing:0.02em; }
+  #eternaAdPanel td.miss { font-family:var(--font-mono); font-size:12px; color:var(--red); font-weight:600; }
+  #eternaAdPanel td.miss.zero { color:var(--muted); font-weight:400; }
+  #eternaAdPanel .miss-tag { font-family:var(--font-mono); font-size:9px; color:var(--amber); margin-left:4px; letter-spacing:0.04em; }
+  .acp-count.miss { color:var(--red); background:rgba(239,68,68,0.08); margin-left:6px; }
   #eternaAdPanel .src-ads { color:var(--accent); }
   #eternaAdPanel .src-retreaver { color:var(--purple); }
   #eternaAdPanel .src-direct { color:var(--muted); }
@@ -451,6 +455,7 @@
     <summary>
       <span class="acp-title">Eterna Google Ads — inbound callers</span>
       <span class="acp-count" id="eternaAdCount">—</span>
+      <span class="acp-count miss" id="eternaAdMissCount">—</span>
       <span class="acp-hint" id="eternaAdHint">(888) 579-7090 · unique numbers, newest first · follows the date range above</span>
     </summary>
     <div class="etad-bar">
@@ -458,6 +463,9 @@
       <span class="etad-chip"        id="etadTabRtv"  onclick="setEternaAdFilter('retreaver')">Purchased leads</span>
       <span class="etad-chip"        id="etadTabDir"  onclick="setEternaAdFilter('direct')">Direct dials</span>
       <span class="etad-chip"        id="etadTabAll"  onclick="setEternaAdFilter('all')">All</span>
+      <!-- ANDs with the source tab above rather than replacing it, so "ad line +
+           missed only" is reachable — that pair is the documentation view. -->
+      <span class="etad-chip"        id="etadTabMissed" onclick="toggleEternaMissedOnly()">Missed only</span>
       <span class="etad-spacer"></span>
       <span class="etad-btn" onclick="copyEternaAdNumbers()">Copy numbers</span>
       <span class="etad-btn" onclick="exportEternaAdCsv()">CSV</span>
@@ -1093,9 +1101,9 @@ function processCalls(calls, start, end, opts) {
     // tid is null on most Retreaver setups; fall back to target name from our map
     const agent    = call.tid || (sysId ? targetIdToName[sysId] : null) || null;
     // Row identity is the TARGET, not the display name. One agent can hold two
-    // Retreaver targets (two DIDs) under the same name — e.g. Ravi Verma on
-    // 140772 + 135932 — and keying by name collapsed them into a single row,
-    // hiding one line's calls entirely. Fall back to the name only for records
+    // Retreaver targets (two DIDs) under the same name, and keying by name
+    // collapsed them into a single row, hiding one line's calls entirely.
+    // Fall back to the name only for records
     // with no system_target_id (tid-only; unused on this account).
     const agentKey = sysId != null ? 'tgt:' + sysId : agent;
     statusCount[s] = (statusCount[s]||0) + 1;
@@ -2509,9 +2517,25 @@ async function loadAdSpend(rangeStart, rangeEnd, gen) {
 // calls PLUS anyone who direct-dialled an agent's own number, because Dialpad
 // does not preserve which DID the caller dialled. Google's own phone_calls count
 // for the range is shown next to it as the strict lower bound.
+//
+// The Missed column is calls where NO AGENT picked up (worker `missed` =
+// attempts − answered). The ring group or a voicemail answering does not count
+// as reached — see the /eterna/ad-callers header comment for why that matters
+// and for the one caveat: days the accumulator closed before 2026-08-24 miss the
+// ~1.6% of calls that rang nobody at all, and the panel says so when it applies.
 let eternaAdData   = null;   // last /eterna/ad-callers payload
-let eternaAdFilter = 'ads';  // 'ads' | 'retreaver' | 'all'
+let eternaAdFilter = 'ads';  // 'ads' | 'retreaver' | 'direct' | 'all'
+let etadMissedOnly = false;  // ANDs with the source filter above
 let etadCopyTimer  = null;   // pending "copied N" restore, so clicks can't stack
+
+// Missed calls for one caller row. The worker sends `missed` explicitly; the
+// subtraction is only the fallback for a payload from a worker deployed before
+// that field existed, so the panel degrades to the old (still correct) figure
+// instead of showing zeros everywhere during a rollout.
+function etadMissed(c) {
+  if (!c) return 0;
+  return c.missed != null ? c.missed : Math.max(0, (c.attempts || 0) - (c.answered || 0));
+}
 
 async function loadEternaAdCallers(start, end, gen) {
   const body = document.getElementById('eternaAdBody');
@@ -2526,6 +2550,8 @@ async function loadEternaAdCallers(start, end, gen) {
       try { detail = (await res.json()).detail || ''; } catch (e) {}
       body.innerHTML = `<p class="no-data" style="padding:16px;">Caller feed unavailable (HTTP ${res.status})${detail ? ' — ' + esc(String(detail)).slice(0, 200) : ''}.</p>`;
       if (countEl) countEl.textContent = '—';
+      const mEl = document.getElementById('eternaAdMissCount');
+      if (mEl) mEl.textContent = '—';
       eternaAdData = null;
       return;
     }
@@ -2537,6 +2563,8 @@ async function loadEternaAdCallers(start, end, gen) {
     if (gen !== undefined && gen !== fetchGen) return;
     body.innerHTML = `<p class="no-data" style="padding:16px;">Could not load callers: ${esc(e.message)}</p>`;
     if (countEl) countEl.textContent = '—';
+    const mEl2 = document.getElementById('eternaAdMissCount');
+    if (mEl2) mEl2.textContent = '—';
     console.warn('loadEternaAdCallers failed:', e.message);
   }
 }
@@ -2551,10 +2579,17 @@ function setEternaAdFilter(f) {
   renderEternaAdPanel();
 }
 
+function toggleEternaMissedOnly() {
+  etadMissedOnly = !etadMissedOnly;
+  const el = document.getElementById('etadTabMissed');
+  if (el) el.classList.toggle('active', etadMissedOnly);
+  renderEternaAdPanel();
+}
+
 function eternaAdRows() {
   const all = (eternaAdData && eternaAdData.callers) || [];
-  if (eternaAdFilter === 'all') return all;
-  return all.filter(c => c.source === eternaAdFilter);
+  const bySource = eternaAdFilter === 'all' ? all : all.filter(c => c.source === eternaAdFilter);
+  return etadMissedOnly ? bySource.filter(c => etadMissed(c) > 0) : bySource;
 }
 
 function renderEternaAdPanel() {
@@ -2566,6 +2601,8 @@ function renderEternaAdPanel() {
   if (!d) {
     body.innerHTML = '<p class="no-data" style="padding:16px;">Loading…</p>';
     if (countEl) countEl.textContent = '—';
+    const m0 = document.getElementById('eternaAdMissCount');
+    if (m0) m0.textContent = '—';
     if (noteEl) noteEl.innerHTML = '';
     return;
   }
@@ -2574,12 +2611,43 @@ function renderEternaAdPanel() {
   if (countEl) {
     countEl.textContent = `${t.unique_ad_callers || 0} unique on the ad line`;
   }
+  // Ad-line misses, always the ad line regardless of which tab is open — this is
+  // the number being documented, so it must not move when someone clicks around.
+  const missEl = document.getElementById('eternaAdMissCount');
+  if (missEl) {
+    const am = t.ad_missed != null
+      ? t.ad_missed
+      : ((eternaAdData.callers || []).filter(c => c.source === 'ads').reduce((s, c) => s + etadMissed(c), 0));
+    // ad_calls, never ad_events — see the worker totals comment: ad_events is an
+    // event count and ad_missed is a row sum, so dividing by ad_events can print
+    // over 100%. Falls back to ad_events only for a pre-ad_calls worker.
+    const ae = t.ad_calls != null ? t.ad_calls : (t.ad_events || 0);
+    missEl.textContent = `${am} missed${ae ? ` · ${Math.round((am / ae) * 100)}%` : ''}`;
+    missEl.style.display = '';
+  }
 
   // The honest bracket + every caveat that would otherwise make this table lie.
   if (noteEl) {
     const bits = [];
     if (t.google_phone_calls != null) {
       bits.push(`Google counted <strong>${t.google_phone_calls}</strong> ad calls for this range (strict lower bound).`);
+    }
+    // Miss anatomy, stated before the caveats so the documented number is the
+    // first thing read. "Missed" = no AGENT ever picked up; the ring group or a
+    // voicemail answering does not count as reached.
+    if (t.ad_missed != null) {
+      const ae = t.ad_calls != null ? t.ad_calls : (t.ad_events || 0);
+      const pct = ae ? Math.round((t.ad_missed / ae) * 100) : 0;
+      let m = `<strong>${t.ad_missed}</strong> of ${ae} ad-line call${ae === 1 ? '' : 's'} (${pct}%) never reached an agent`;
+      const parts = [];
+      if (t.ad_missed_no_ring) parts.push(`${t.ad_missed_no_ring} rang no one at all (nobody on shift, available, or under cap)`);
+      if (t.ad_voicemails) parts.push(`${t.ad_voicemails} left a voicemail`);
+      if (parts.length) m += ` — ${parts.join(', ')}`;
+      m += `. ${t.unique_ad_callers_never_reached || 0} unique number${(t.unique_ad_callers_never_reached || 0) === 1 ? '' : 's'} got nobody on any attempt.`;
+      bits.push(m);
+    }
+    if (d.legacy_missed_events) {
+      bits.push(`<span class="warn">⚠ ${d.legacy_missed_events} missed call${d.legacy_missed_events === 1 ? '' : 's'} in this range were recorded before the miss breakdown shipped — their missed totals are right, but "rang no one" and the voicemail count are floors for those days, and days already closed by then also miss the ~1.6% of calls that rang nobody at all.</span>`);
     }
     bits.push(`"Ad line" = came in on the main line (Policy Help Desk, 949-787-5208) with no Retreaver match. ${t.unique_direct_callers || 0} caller${(t.unique_direct_callers || 0) === 1 ? '' : 's'} who dialled an agent's own number instead — callbacks and saved numbers — are under <em>Direct dials</em>, not here.`);
     bits.push(`Still an upper bound: the ad number and the purchased-lead number forward into the same Dialpad department, so only the Retreaver match separates them, and a caller who saved 579-7090 from an older ad is indistinguishable from a fresh click.`);
@@ -2607,7 +2675,9 @@ function renderEternaAdPanel() {
 
   const rows = eternaAdRows();
   if (!rows.length) {
-    body.innerHTML = '<p class="no-data" style="padding:16px;">No callers in this period.</p>';
+    body.innerHTML = etadMissedOnly
+      ? '<p class="no-data" style="padding:16px;">No missed calls in this period for this source — every caller reached an agent.</p>'
+      : '<p class="no-data" style="padding:16px;">No callers in this period.</p>';
     return;
   }
 
@@ -2621,12 +2691,18 @@ function renderEternaAdPanel() {
   let html = `<table><thead><tr>
     <th class="r">#</th><th>Phone</th><th class="r">Area</th>
     <th>First call</th><th>Last call</th>
-    <th class="r">Calls</th><th>Status</th><th>Answered by</th>
+    <th class="r">Calls</th><th class="r">Missed</th><th>Status</th><th>Answered by</th>
     <th class="r">Longest</th><th class="r">Total talk</th><th>Source</th>
   </tr></thead><tbody>`;
 
   rows.forEach((c, i) => {
     const missed = c.answered === 0;
+    const nMissed = etadMissed(c);
+    // Why the miss happened, when the row can say. "no ring" is the actionable
+    // one; "vm" means the caller cared enough to leave a message.
+    const tags = [];
+    if (c.no_ring) tags.push(`<span class="miss-tag" title="rang no agent at all">no ring×${c.no_ring}</span>`);
+    if (c.voicemails) tags.push(`<span class="miss-tag" title="caller left a voicemail">vm×${c.voicemails}</span>`);
     const pill = missed
       ? '<span class="acp-pill missed">missed</span>'
       : `<span class="acp-pill connected">${c.answered}/${c.attempts} answered</span>`;
@@ -2639,6 +2715,7 @@ function renderEternaAdPanel() {
       <td>${fmtStamp(c.first_ms)}</td>
       <td>${fmtStamp(c.last_ms)}</td>
       <td class="r">${c.attempts}</td>
+      <td class="r miss${nMissed ? '' : ' zero'}">${nMissed}${tags.join('')}</td>
       <td>${pill}</td>
       <td>${c.last_agent ? esc(c.last_agent) : '<span style="color:var(--muted);">—</span>'}</td>
       <td class="r">${fmtDur(c.longest_s || 0)}</td>
@@ -2650,10 +2727,13 @@ function renderEternaAdPanel() {
   const totalTalk = rows.reduce((s, c) => s + (c.talk_s || 0), 0);
   const totalCalls = rows.reduce((s, c) => s + (c.attempts || 0), 0);
   const totalAns = rows.reduce((s, c) => s + (c.answered || 0), 0);
+  const totalMissed = rows.reduce((s, c) => s + etadMissed(c), 0);
+  const totalNoRing = rows.reduce((s, c) => s + (c.no_ring || 0), 0);
   html += `</tbody><tfoot><tr class="deals-total">
     <td colspan="5" style="font-family:var(--font-mono);font-size:11px;">${rows.length} unique number${rows.length === 1 ? '' : 's'}</td>
     <td class="r">${totalCalls}</td>
-    <td colspan="2" style="font-family:var(--font-mono);font-size:11px;">${totalAns} answered</td>
+    <td class="r" style="color:var(--red);">${totalMissed}${totalNoRing ? `<span class="miss-tag">no ring×${totalNoRing}</span>` : ''}</td>
+    <td colspan="2" style="font-family:var(--font-mono);font-size:11px;">${totalAns} answered${totalCalls ? ` · ${Math.round((totalMissed / totalCalls) * 100)}% missed` : ''}</td>
     <td></td>
     <td class="r">${fmtDur(totalTalk)}</td><td></td>
   </tr></tfoot></table>`;
@@ -2682,10 +2762,11 @@ function exportEternaAdCsv() {
   const rows = eternaAdRows();
   if (!rows.length) return;
   const iso = (ms) => ms ? new Date(ms).toISOString() : '';
-  const head = 'phone,area,source,first_call_utc,last_call_utc,calls,answered,longest_s,total_talk_s,answered_by';
+  const head = 'phone,area,source,first_call_utc,last_call_utc,calls,answered,missed,missed_no_ring,voicemails,longest_s,total_talk_s,answered_by';
   const body = rows.map(c => [
     '+1' + c.phone, c.area || '', c.source, iso(c.first_ms), iso(c.last_ms),
-    c.attempts, c.answered, c.longest_s || 0, c.talk_s || 0,
+    c.attempts, c.answered, etadMissed(c), c.no_ring || 0, c.voicemails || 0,
+    c.longest_s || 0, c.talk_s || 0,
     '"' + String(c.last_agent || '').replace(/"/g, '""') + '"',
   ].join(','));
   const blob = new Blob([[head].concat(body).join('\n')], { type: 'text/csv' });
@@ -2693,7 +2774,7 @@ function exportEternaAdCsv() {
   const a = document.createElement('a');
   const r = (eternaAdData && eternaAdData.range) || {};
   a.href = url;
-  a.download = `eterna-ad-callers-${r.start || 'range'}_${r.end || ''}-${eternaAdFilter}.csv`;
+  a.download = `eterna-ad-callers-${r.start || 'range'}_${r.end || ''}-${eternaAdFilter}${etadMissedOnly ? '-missed' : ''}.csv`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
