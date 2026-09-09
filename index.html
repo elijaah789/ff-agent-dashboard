@@ -270,6 +270,7 @@
     <div class="mc g"><div class="ml">Unique calls</div>  <div class="mv g" id="mUnique">—</div></div>
     <div class="mc g"><div class="ml">Answered</div>      <div class="mv g" id="mAnswered">—</div></div>
     <div class="mc p"><div class="ml">Receivable</div>    <div class="mv p" id="mReceivable">—</div></div>
+    <div class="mc p" title="60s+ calls this week — resets Sunday 10pm Eastern; not affected by the date range"><div class="ml">This week (60s+)</div> <div class="mv p" id="mWeek">—</div></div>
     <div class="mc r"><div class="ml">Not sold</div>      <div class="mv r" id="mNotSold">—</div></div>
     <div class="mc r" onclick="openMissedPanel()" style="cursor:pointer;" title="Click to see every missed call"><div class="ml">Missed calls</div>  <div class="mv r" id="mMissed">—</div></div>
     <div class="mc p"><div class="ml">10min+ calls</div>  <div class="mv p" id="mLongCalls">—</div></div>
@@ -433,6 +434,7 @@
           <th class="r">Unique</th>
           <th class="r">Answered</th>
           <th class="r">Receivable (60s+)</th>
+          <th class="r" title="60s+ calls since Sunday 10pm Eastern (same rule as Receivable). Resets every Sunday 10pm ET; not affected by the date range.">This week (60s+)</th>
           <th class="r">10min+ calls</th>
           <th class="r">Live now</th>
           <th class="r">Outbound</th>
@@ -445,7 +447,7 @@
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="17" class="no-data">Loading...</td></tr>
+        <tr><td colspan="18" class="no-data">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -1158,7 +1160,8 @@ function processCalls(calls, start, end, opts) {
       answered:0, live:0, dur:0,
       receivable:0, longCalls:0, outbound:0, calls:[],
       dialedNumber: normalizePhone(call.dialed_number || ''),
-      cohort: cohortOfCall(call)
+      cohort: cohortOfCall(call),
+      targetId: sysId != null ? Number(sysId) : null   // weekly column joins on this
     };
 
     const a   = agents[agentKey];
@@ -1238,7 +1241,8 @@ function processCalls(calls, start, end, opts) {
         answered:0, live:0, dur:0,
         receivable:0, longCalls:0, outbound:0, calls:[],
         dialedNumber: targetIdToPhone[targetId] || '',
-        cohort: cohortOfTarget(targetId)
+        cohort: cohortOfTarget(targetId),
+        targetId: Number(targetId)
       };
     }
   });
@@ -1388,7 +1392,7 @@ function renderTable() {
   ordered.forEach(a => {
     if (a.cohort !== lastCohort) {
       lastCohort = a.cohort;
-      rows += `<tr class="cohort-header"><td colspan="17">${a.cohort==='eterna' ? 'ETERNA AGENTS' : 'FINANCIALLY FLUENT AGENTS'}</td></tr>`;
+      rows += `<tr class="cohort-header"><td colspan="18">${a.cohort==='eterna' ? 'ETERNA AGENTS' : 'FINANCIALLY FLUENT AGENTS'}</td></tr>`;
     }
     rank++;
     const rate   = a.total ? Math.round((a.answered/a.total)*100) : 0;
@@ -1480,6 +1484,7 @@ function renderTable() {
       <td class="r vg">${a.unique.toLocaleString()}</td>
       <td class="r vg">${a.answered.toLocaleString()}</td>
       <td class="r vp">${a.receivable>0?a.receivable.toLocaleString():'<span class="vm">—</span>'}</td>
+      <td class="r vp" data-week-tid="${a.targetId != null ? a.targetId : ''}">${weekCellHtml(a.targetId)}</td>
       <td class="r vp">${a.longCalls>0?a.longCalls:'<span class="vm">—</span>'}</td>
       <td class="r vb">${a.live>0?a.live:'<span class="vm">—</span>'}</td>
       <td class="r vp">${a.outbound>0?a.outbound.toLocaleString():'<span class="vm">—</span>'}</td>
@@ -1491,12 +1496,12 @@ function renderTable() {
       <td class="r">${badge}</td>
     </tr>
     <tr class="detail-row" id="${detailId}">
-      <td colspan="17">${buildDetailTable(a)}</td>
+      <td colspan="18">${buildDetailTable(a)}</td>
     </tr>`;
   });
 
   if (!search) {
-    rows += `<tr class="div-row"><td colspan="17">Not sold — no agent reached</td></tr>`;
+    rows += `<tr class="div-row"><td colspan="18">Not sold — no agent reached</td></tr>`;
     rows += `<tr class="agent-row ns-row" onclick="toggleDetail('detail-notsold','icon-notsold')">
       <td style="width:20px;"><span class="expand-icon" id="icon-notsold">▶</span></td>
       <td class="vm" style="font-size:11px;font-family:var(--font-mono);">—</td>
@@ -1511,12 +1516,12 @@ function renderTable() {
       <td class="r"><span class="badge br">Not sold</span></td>
     </tr>
     <tr class="detail-row" id="detail-notsold">
-      <td colspan="17">${buildNotSoldTable()}</td>
+      <td colspan="18">${buildNotSoldTable()}</td>
     </tr>`;
   }
 
   document.getElementById('tbody').innerHTML =
-    rows || `<tr><td colspan="17" class="no-data">No agents found.</td></tr>`;
+    rows || `<tr><td colspan="18" class="no-data">No agents found.</td></tr>`;
 }
 
 // ─── Per-call detail dropdown ───────────────────────────────────────────────
@@ -2250,6 +2255,73 @@ function renderEternaQuota() {
     `Kept off the FF "Daily quota" card because this is one routing leg for the whole ` +
     `cohort, not a roster agent — per-agent Eterna caps do not exist in Retreaver. ` +
     `Counts Retreaver's Daily "filled" (60s of TALK time); resets midnight Arizona — not affected by the date range.`;
+}
+
+// ─── Weekly 60s+ calls per agent — resets Sunday 10pm Eastern ───────────────
+// "How many calls has each agent taken this week." Served by the worker's
+// /retreaver/week-calls (chunk-cached scan + 60s KV cache), which applies the
+// same Receivable rule as processCalls(): answered with 60s+ of agent TALK
+// time. The week is Sunday 22:00 ET → next Sunday 21:59:59 ET (owner's reset,
+// 2026-09-09) and does NOT follow the date-range picker — like the quota cards.
+// The column is patched in place when the fetch lands (no table re-render, so
+// an expanded agent row stays open); renderTable() reads the last payload.
+let weekCalls = null;   // last /retreaver/week-calls payload (null = not loaded yet)
+async function fetchWeekCalls(gen) {
+  try {
+    const camp = CAMPAIGN_KEYS.size ? `?campaign=${encodeURIComponent([...CAMPAIGN_KEYS].join(','))}` : '';
+    const res = await authedFetch(`/retreaver/week-calls${camp}`, { timeoutMs: 90000 });
+    if (!res.ok) { console.warn(`week-calls HTTP ${res.status}`); return; }
+    const j = await res.json();
+    if (!j || !j.per_target) return;
+    weekCalls = j;
+  } catch (e) { console.warn('week-calls failed:', e.message); return; }
+  if (gen !== fetchGen) return;          // a newer refresh owns the table now
+  applyWeekCells();
+  renderWeekCard();
+}
+function weekWindowLabel() {
+  if (!weekCalls) return '';
+  const f = (iso) => new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return `${f(weekCalls.week_start)} ET → resets ${f(weekCalls.next_reset)} ET`;
+}
+function weekCellHtml(targetId) {
+  if (!weekCalls) return '<span class="vm" title="Loading this week\'s calls…">…</span>';
+  if (targetId == null || targetId === '') return '<span class="vm">—</span>';
+  const w = weekCalls.per_target[String(targetId)];
+  const n = w ? (w.calls60 || 0) : 0;
+  const tip = `${n} call${n === 1 ? '' : 's'} with 60s+ of talk time this week` +
+    (w ? ` (${w.calls} routed to this agent)` : '') +
+    ` · ${weekWindowLabel()}` +
+    (weekCalls.truncated ? ' · ⚠ part of the week could not be read — undercount' : '') +
+    (weekCalls.stale ? ' · last good snapshot' : '');
+  return `<span title="${esc(tip)}">${n > 0 ? n.toLocaleString() : '<span class="vm">—</span>'}</span>`;
+}
+function applyWeekCells() {
+  document.querySelectorAll('td[data-week-tid]').forEach(td => {
+    const id = td.getAttribute('data-week-tid');
+    td.innerHTML = weekCellHtml(id === '' ? null : id);
+  });
+}
+function renderWeekCard() {
+  const el = document.getElementById('mWeek');
+  if (!el) return;
+  const card = el.closest('.mc');
+  if (!weekCalls) {
+    el.textContent = '—';
+    if (card) card.title = '60s+ calls this week — loading';
+    return;
+  }
+  let ff = 0, et = 0;
+  Object.entries(weekCalls.per_target).forEach(([id, w]) => {
+    if (isEternaTarget(id, w.name)) et += (w.calls60 || 0); else ff += (w.calls60 || 0);
+  });
+  el.textContent = (ff + et).toLocaleString() + (weekCalls.truncated ? ' ⚠' : '');
+  if (card) card.title =
+    `60s+ calls this week — Financially Fluent ${ff}, Eterna ${et}. ` +
+    `Week runs ${weekWindowLabel()}. Same rule as Receivable (answered, 60s+ of agent talk time). ` +
+    `Resets every Sunday 10pm Eastern; not affected by the date range.` +
+    (weekCalls.truncated ? ' ⚠ Part of the week could not be read from Retreaver — this is an undercount.' : '') +
+    (weekCalls.stale ? ' (last good snapshot — refreshing)' : '');
 }
 
 // ─── Durable force-pause: KV overrides on every target ──────────────────────
@@ -3038,7 +3110,7 @@ async function fetchData() {
     document.getElementById('statusText').textContent = 'Setup required';
     document.getElementById('statusText').className = 'st err';
     document.getElementById('dot').className = 'brand-dot error';
-    document.getElementById('tbody').innerHTML = `<tr><td colspan="17" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
+    document.getElementById('tbody').innerHTML = `<tr><td colspan="18" class="no-data">Configure ?worker= and ?token= in the URL.</td></tr>`;
     return;
   }
 
@@ -3094,6 +3166,7 @@ async function fetchData() {
   });
   loadAdSpend(start, end, gen);   // account spend — worker KV-caches 15 min
   loadGhlDeals(start, end, gen);  // Eterna Spark closed deals for the selected range
+  fetchWeekCalls(gen);            // weekly 60s+ per agent — fixed Sun-10pm-ET week, ignores the range
   const capsPromise = fetchTargetCaps();  // populates targetIdToName/-Phone, which processCalls needs
 
   let isHistorical = false;
@@ -3128,7 +3201,7 @@ async function fetchData() {
       Verify <code>worker</code> and <code>token</code> in the URL match your Cloudflare deploy.
       Try <code>${esc(WORKER_URL)}/healthz</code> in a new tab.`;
     document.getElementById('tbody').innerHTML=
-      `<tr><td colspan="17" class="no-data">No data loaded.</td></tr>`;
+      `<tr><td colspan="18" class="no-data">No data loaded.</td></tr>`;
   } finally {
     load.style.display='none';
     fetchInFlight = false;
