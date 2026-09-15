@@ -1058,14 +1058,36 @@ function updateDialpadBar() {
 // cron folds every "can't take a call" reason — Dialpad unavailable, HELD
 // (manual override pause), and CAPPED (hit daily 60s-call cap) — into the
 // target.paused flag every minute, so a single `!paused` check covers them all.
-// Counted off the live target roster (deleted agents are already gone). The
-// Eterna buyer line (+18587422352, always unpaused) is kept out of the FF badge.
+// Counted off the live target roster (deleted agents are already gone).
+//
+// /retreaver/targets is ACCOUNT-wide, not campaign-scoped, so anything that is
+// not a person's phone has to be dropped here or it inflates the badge. On
+// 2026-09-15 the badge read "14 available" with 2 real agents on: 11 TV-spot
+// targets ("TV Test — 435-255-6662 (… CID)", one per creative caller-ID, all
+// KV-overridden active, all ringing the always-available house line) plus the
+// Eterna buyer route, whose DID moved 858→714 so the old literal-number check
+// no longer recognised it and counted it as FF.
+//   • NON_AGENT_TARGET_IDS — the Eterna buyer/overflow route (metered on its own card).
+//   • HOUSE_LINE_DIGITS — 435-255-6662, the shared "Financially Fluent" Dialpad
+//     user. TV/CTV/Meta per-creative targets and the held 130833 all ride it.
+//   • NON_AGENT_TARGET_NAME_RE — belt-and-braces for future test/TV targets
+//     that get a fresh number.
+// Cohort split reuses cohortOfTarget() so Eterna DIDs live in one place.
+const HOUSE_LINE_DIGITS = '4352556662';
+const NON_AGENT_TARGET_NAME_RE = /^(tv test|tv spot|ctv test|test)\b/i;
+function isAgentTarget(id) {
+  if (NON_AGENT_TARGET_IDS.has(Number(id))) return false;
+  const d = String(targetIdToPhone[id] || '').replace(/\D/g,'').slice(-10);
+  if (d === HOUSE_LINE_DIGITS) return false;
+  if (NON_AGENT_TARGET_NAME_RE.test(String(targetIdToName[id] || '').trim())) return false;
+  return true;
+}
 function computeAvailability() {
   let ff = 0, et = 0;
   Object.keys(targetCaps).forEach(id => {
     if (targetCaps[id].paused) return;                 // paused / HELD / CAPPED / unavailable
-    const d = String(targetIdToPhone[id] || '').replace(/\D/g,'').slice(-10);
-    if (d === '8587422352' || d.slice(0,3) === '949') et++; else ff++;
+    if (!isAgentTarget(id)) return;                    // TV/test targets, house line, Eterna buyer
+    if (cohortOfTarget(id) === 'eterna') et++; else ff++;
   });
   return { ff, et, overall: ff + et };
 }
