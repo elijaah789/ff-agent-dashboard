@@ -396,6 +396,15 @@
     <div id="allCallsBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
   </details>
 
+  <details id="matrixPanel" class="all-calls-panel" open style="display:none">
+    <summary>
+      <span class="acp-title">Matrix Leads buyers</span>
+      <span class="acp-count" id="matrixCount">—</span>
+      <span class="acp-hint" id="matrixHint">purchased calls · stop at 0 calls left or 0 connects left, whichever first</span>
+    </summary>
+    <div id="matrixBody"><p class="no-data" style="padding:16px;">Loading...</p></div>
+  </details>
+
   <details id="missedPanel" class="all-calls-panel">
     <summary>
       <span class="acp-title">Missed calls</span>
@@ -2288,6 +2297,53 @@ function renderEternaQuota() {
 // The column is patched in place when the fetch lands (no table re-render, so
 // an expanded agent row stays open); renderTable() reads the last payload.
 let weekCalls = null;   // last /retreaver/week-calls payload (null = not loaded yet)
+// Matrix Leads buyers — outside agents who BUY calls on leads.helpwithlifepolicy.com. The worker's
+// reconcile cron counts each buyer's 60s calls + unique connects against what they bought and
+// (with the hard stop on) pauses them at 0; this panel shows that snapshot. Ignores the range.
+async function fetchMatrixBalances(gen) {
+  let j = null;
+  try {
+    const res = await authedFetch('/matrix/balances', { timeoutMs: 20000 });
+    if (!res.ok) { console.warn(`matrix balances HTTP ${res.status}`); return; }
+    j = await res.json();
+  } catch (e) { console.warn('matrix balances failed:', e.message); return; }
+  if (gen !== fetchGen) return;
+  renderMatrixPanel(j);
+}
+function renderMatrixPanel(j) {
+  const panel = document.getElementById('matrixPanel');
+  const rows = (j && j.buyers) || [];
+  if (!panel) return;
+  if (!rows.length) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const q = (s) => esc(s).replace(/"/g, '&quot;');
+  const out = rows.filter(r => r.exhausted).length;
+  document.getElementById('matrixCount').textContent = `${rows.length} buyer${rows.length === 1 ? '' : 's'}` + (out ? ` · ${out} out` : '');
+  document.getElementById('matrixHint').textContent = `hard stop ${j.enforce ? 'ON' : 'OFF (display only)'} · updated ${j.age_s != null ? j.age_s + 's ago' : '—'} · balance never expires`;
+  const stopTxt = (r) => r.stop_reason === 'connects' ? 'connects' : r.stop_reason === 'no_balance' ? 'no paid purchase' : '60s calls';
+  const status = (r) => {
+    if (r.target_id == null) return `<span class="acp-pill short">${esc(r.note || 'not routed')}</span>`;
+    if (r.exhausted) return `<span class="acp-pill missed">Out · ${esc(stopTxt(r))}${j.enforce ? '' : ' · not enforced'}</span>`;
+    if (r.usage_ok === false) return `<span class="acp-pill short">count unavailable</span>`;
+    return r.paused ? `<span class="acp-pill short">Paused</span>` : `<span class="acp-pill connected">Live</span>`;
+  };
+  const day = (ms) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+  const n = (v) => v == null ? '—' : v;
+  const left = (v) => `<b style="color:${v > 0 ? 'var(--accent)' : 'var(--red)'}">${n(v)}</b>`;
+  const body = rows.slice().sort((a, b) => (a.calls_left || 0) - (b.calls_left || 0)).map(r => `<tr>
+      <td title="${q((r.emails || [r.email]).join(', '))}">${esc(r.name || r.email)}<div style="font-size:10px;color:var(--muted)">since ${day(r.start_ms)}${r.purchases > 1 ? ` · ${r.purchases} purchases` : ''}</div>${(r.flags || []).map(f => `<div style="font-size:10px;color:var(--amber)">⚠ ${esc(f)}</div>`).join('')}</td>
+      <td class="r">${n(r.calls_used)} / ${n(r.calls_total)}</td>
+      <td class="r">${n(r.connects_used)} / ${n(r.connects_total)}</td>
+      <td class="r">${left(r.calls_left)}</td>
+      <td class="r">${left(r.connects_left)}</td>
+      <td class="r">${n(r.today60)} · ${n(r.today_connects)}</td>
+      <td>${status(r)}</td></tr>`).join('');
+  document.getElementById('matrixBody').innerHTML = `<table><thead><tr>
+      <th>Buyer</th><th class="r" title="Answered, 60+ seconds of agent talk">60s calls used</th><th class="r" title="Different callers who talked at least 1 second">Unique connects</th>
+      <th class="r">Calls left</th><th class="r">Connects left</th><th class="r" title="60s calls · unique connects today (ET)">Today</th><th>Status</th>
+    </tr></thead><tbody>${body}</tbody></table>`;
+}
+
 async function fetchWeekCalls(gen) {
   try {
     const camp = CAMPAIGN_KEYS.size ? `?campaign=${encodeURIComponent([...CAMPAIGN_KEYS].join(','))}` : '';
@@ -3189,6 +3245,7 @@ async function fetchData() {
   loadAdSpend(start, end, gen);   // account spend — worker KV-caches 15 min
   loadGhlDeals(start, end, gen);  // Eterna Spark closed deals for the selected range
   fetchWeekCalls(gen);            // weekly 60s+ per agent — fixed Sun-10pm-ET week, ignores the range
+  fetchMatrixBalances(gen);       // Matrix Leads buyers' purchased-call balances — ignores the range
   const capsPromise = fetchTargetCaps();  // populates targetIdToName/-Phone, which processCalls needs
 
   let isHistorical = false;
