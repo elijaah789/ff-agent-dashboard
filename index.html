@@ -56,6 +56,11 @@
   .cohort-table th.r, .cohort-table td.r { text-align:right; font-family:var(--font-mono); }
   .cohort-table th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; }
   .cohort-table tbody tr:last-child td { border-bottom:none; }
+  .split-table tr.tot td { font-weight:700; color:var(--text); border-bottom:2px solid var(--border); }
+  .split-table tr.grp td { font-weight:600; }
+  .split-table td.sub { padding-left:24px; color:var(--muted); font-size:12px; }
+  .split-table tr.subrow td.r { color:var(--muted); font-size:12px; }
+  .split-flag { color:var(--amber); }
   tr.cohort-header td { background:var(--surface); color:var(--text); font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700; padding:10px 12px; border-top:2px solid var(--border); }
   .state-tag { display:inline-block; margin-left:8px; padding:1px 6px; border-radius:4px; font-family:var(--font-mono); font-size:9px; font-weight:700; letter-spacing:0.06em; vertical-align:middle; }
   .state-tag.held   { background:rgba(148,163,184,0.16); color:#94a3b8; border:1px solid rgba(148,163,184,0.45); }
@@ -398,6 +403,21 @@
         <div class="mv p" id="mCPR">—</div>
         <div class="ss-sub">spend ÷ receivable calls · selected range</div>
       </div>
+    </div>
+  </div>
+
+  <div class="spend-strip" id="splitStrip">
+    <div class="ss-head">
+      <span class="ss-title">Who pays — Financially Fluent vs Eterna</span>
+      <span class="ss-note" id="splitNote">Friday lead-cost email rules · follows date range</span>
+    </div>
+    <div id="splitLock" style="display:none; padding:12px 0; text-align:center; font-family:var(--font-mono); font-size:11px; color:var(--muted);">&#128274; Unlock spend above to see the split</div>
+    <div id="splitBody">
+      <table class="cohort-table split-table">
+        <thead><tr><th></th><th class="r">Financially Fluent</th><th class="r">Eterna</th><th class="r">Total</th></tr></thead>
+        <tbody id="splitRows"><tr><td colspan="4" class="no-data">Loading...</td></tr></tbody>
+      </table>
+      <div class="ss-sub" id="splitFoot"></div>
     </div>
   </div>
 
@@ -2641,12 +2661,16 @@ let SPEND_PASS = localStorage.getItem('ff_spend_pass') || '';
 function showSpendLock(isRetry) {
   document.getElementById('spendLock').style.display = 'block';
   document.getElementById('spendCards').style.display = 'none';
+  document.getElementById('splitLock').style.display = 'block';
+  document.getElementById('splitBody').style.display = 'none';
   document.getElementById('spendPassErr').style.display = isRetry ? 'block' : 'none';
 }
 
 function hideSpendLock() {
   document.getElementById('spendLock').style.display = 'none';
   document.getElementById('spendCards').style.display = '';
+  document.getElementById('splitLock').style.display = 'none';
+  document.getElementById('splitBody').style.display = '';
 }
 
 async function submitSpendPassword() {
@@ -2741,6 +2765,78 @@ async function loadAdSpend(rangeStart, rangeEnd, gen) {
       if (gen !== undefined && gen !== fetchGen) return;
       rEl.textContent = '—'; lastRangeSpend = null; renderCPL(); console.warn('loadAdSpend range failed:', e.message);
     }
+  }
+}
+
+// ─── Who pays — FF vs Eterna cost split ──────────────────────────────────────
+// The Friday lead-cost email's split for the selected range, computed by the
+// worker (/cost-split): FF-account Google Ads + the shared Retreaver line (49373)
+// split by each team's share of connected calls on that line; FF Spanish ads +
+// the Spanish line (52145, from 11-05) and every Eterna-only Retreaver number
+// (53788) go 100% to Eterna. Behind the spend password; worker KV-caches 5 min.
+let splitShownKey = null;   // range whose numbers are on screen — a failed refresh keeps them
+
+function renderCostSplit(d) {
+  const $ = n => (n == null ? '—' : fmtUSD(n));
+  const mins = m => (m == null ? '—' : fmtDur(Math.round(m * 60)));
+  const n = v => (Number(v) || 0).toLocaleString();
+  const s = d.split || {}, g = d.google || {}, r = d.retreaver || {}, t = d.totals || {};
+  const pct = s.ff_pct == null ? 'no connected calls yet'
+    : `FF ${s.ff_pct}% · Eterna ${s.eterna_pct}%`;
+  const L = d.lines || {};
+  const row = (cls, label, ff, et, tot, labelCls) =>
+    `<tr class="${cls}"><td class="${labelCls || ''}">${label}</td><td class="r">${ff}</td><td class="r">${et}</td><td class="r">${tot}</td></tr>`;
+  const conn = (L.shared_ff ? L.shared_ff.connected : 0) + (L.shared_eterna ? L.shared_eterna.connected : 0);
+  const sideConn = (L.eterna_only ? L.eterna_only.connected : 0) + (L.spanish ? L.spanish.connected : 0);
+  const talkTot = (d.talk_min && d.talk_min.ff != null && d.talk_min.eterna != null) ? d.talk_min.ff + d.talk_min.eterna : null;
+  document.getElementById('splitRows').innerHTML = [
+    row('tot', 'Total ad cost', $(t.ff), $(t.eterna), $(t.all)),
+    row('grp', 'Google Ads · FF account', $(g.ff), $(g.eterna), $(g.total)),
+    row('subrow', `Shared ads · split by connected calls (${pct})`, $(g.shared_ff), $(g.shared_eterna), $(g.shared), 'sub'),
+    row('subrow', 'Spanish ads · 100% Eterna', '—', $(g.spanish), $(g.spanish), 'sub'),
+    row('grp', 'Retreaver', $(r.ff), $(r.eterna), $(r.total)),
+    row('subrow', 'Shared line · same split', $(r.shared_ff), $(r.shared_eterna), $(r.shared), 'sub'),
+    row('subrow', 'Eterna-only numbers (experimental + TV) · 100% Eterna', '—', $(r.eterna_only), $(r.eterna_only), 'sub'),
+    row('subrow', 'Spanish line · 100% Eterna', '—', $(r.spanish), $(r.spanish), 'sub'),
+    row('grp', 'Connected calls', n(d.connected && d.connected.ff), n(d.connected && d.connected.eterna),
+        n((d.connected ? d.connected.ff + d.connected.eterna : 0))),
+    row('subrow', 'Shared line (sets the split)', n(s.connected_ff), n(s.connected_eterna), n(conn), 'sub'),
+    row('subrow', 'Eterna-only + Spanish lines', '—', n(sideConn), n(sideConn), 'sub'),
+    row('grp', 'Talk time', mins(d.talk_min && d.talk_min.ff), mins(d.talk_min && d.talk_min.eterna), mins(talkTot)),
+  ].join('');
+  const when = d.computed_at ? new Date(d.computed_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
+  const own = d.eterna_own_google == null ? '' :
+    ` · Eterna's own Google Ads account (Eterna pays Google directly, not in this split): <span>${fmtUSD(d.eterna_own_google)}</span>`;
+  const flags = (d.flags || []).map(f => `<div class="split-flag">! ${esc(f)}</div>`).join('');
+  document.getElementById('splitFoot').innerHTML =
+    `Phoenix days · Retreaver = per-minute usage charges${own}${when ? ` · as of ${when}` : ''}${flags}`;
+}
+
+async function loadCostSplit(rangeStart, rangeEnd, gen) {
+  if (!SPEND_PASS || !rangeStart || !rangeEnd) return;   // the spend lock covers this strip too
+  const key = rangeStart + ':' + rangeEnd;
+  const foot = document.getElementById('splitFoot');
+  if (splitShownKey !== key) {
+    document.getElementById('splitRows').innerHTML = '<tr><td colspan="4" class="no-data">Loading...</td></tr>';
+    if (foot) foot.textContent = '';
+  }
+  const fail = msg => {
+    if (splitShownKey === key) { if (foot) foot.insertAdjacentHTML('beforeend', `<div class="split-flag">! ${esc(msg)}</div>`); return; }
+    document.getElementById('splitRows').innerHTML = `<tr><td colspan="4" class="no-data">${esc(msg)}</td></tr>`;
+  };
+  try {
+    // A cold multi-day range rescans Retreaver server-side, so allow longer than the default.
+    const res = await authedFetch(`/cost-split?start=${rangeStart}&end=${rangeEnd}`, { timeoutMs: 90000 });
+    if (gen !== undefined && gen !== fetchGen) return;
+    if (res.status === 403) return;   // loadAdSpend relocks both strips
+    if (!res.ok) { fail(`Couldn't load the split (HTTP ${res.status}).`); return; }
+    const d = await res.json();
+    if (gen !== undefined && gen !== fetchGen) return;
+    renderCostSplit(d);
+    splitShownKey = key;
+  } catch (e) {
+    if (gen !== undefined && gen !== fetchGen) return;
+    fail(`Couldn't load the split (${e.name === 'AbortError' ? 'timed out' : e.message}).`);
   }
 }
 
@@ -3333,6 +3429,7 @@ async function fetchData() {
     loadEternaAdCallers(start, end, gen);
   });
   loadAdSpend(start, end, gen);   // account spend — worker KV-caches 15 min
+  loadCostSplit(start, end, gen); // FF vs Eterna split (weekly email rules) — worker KV-caches 5 min
   loadGhlDeals(start, end, gen);  // Eterna Spark closed deals for the selected range
   fetchWeekCalls(gen);            // weekly 60s+ per agent — fixed Sun-10pm-ET week, ignores the range
   fetchMatrixBalances(gen);       // Matrix Leads buyers' purchased-call balances — ignores the range
