@@ -450,7 +450,7 @@
 
   <details id="matrixPanel" class="all-calls-panel" open style="display:none">
     <summary>
-      <span class="acp-title">Matrix Leads buyers</span>
+      <span class="acp-title" id="matrixTitle">Matrix Leads buyers</span>
       <span class="acp-count" id="matrixCount">—</span>
       <span class="acp-hint" id="matrixHint">purchased calls · stop at 0 calls left or 0 connects left, whichever first</span>
     </summary>
@@ -2428,7 +2428,10 @@ function renderMatrixPanel(j) {
   panel.style.display = '';
   const q = (s) => esc(s).replace(/"/g, '&quot;');
   const out = rows.filter(r => r.exhausted).length;
-  document.getElementById('matrixCount').textContent = `${rows.length} buyer${rows.length === 1 ? '' : 's'}` + (out ? ` · ${out} out` : '');
+  // FF agents (program ff_agent, 2026-11-07) buy on their own two Stripe links — same rules, tagged here.
+  const ffN = rows.filter(r => r.program === 'ff_agent').length;
+  document.getElementById('matrixTitle').textContent = ffN ? 'Purchased calls · Matrix Leads buyers + FF agents' : 'Matrix Leads buyers';
+  document.getElementById('matrixCount').textContent = `${rows.length} buyer${rows.length === 1 ? '' : 's'}` + (ffN ? ` (${ffN} FF agent${ffN === 1 ? '' : 's'})` : '') + (out ? ` · ${out} out` : '');
   document.getElementById('matrixHint').textContent = `hard stop ${j.enforce ? 'ON' : 'OFF (display only)'} · updated ${j.age_s != null ? j.age_s + 's ago' : '—'} · balance never expires`;
   const stopTxt = (r) => r.stop_reason === 'connects' ? 'connects' : r.stop_reason === 'no_balance' ? 'no paid purchase' : '60s calls';
   const status = (r) => {
@@ -2441,7 +2444,7 @@ function renderMatrixPanel(j) {
   const n = (v) => v == null ? '—' : v;
   const left = (v) => `<b style="color:${v > 0 ? 'var(--accent)' : 'var(--red)'}">${n(v)}</b>`;
   const body = rows.slice().sort((a, b) => (a.calls_left || 0) - (b.calls_left || 0)).map(r => `<tr>
-      <td title="${q((r.emails || [r.email]).join(', '))}">${esc(r.name || r.email)}<div style="font-size:10px;color:var(--muted)">since ${day(r.start_ms)}${r.purchases > 1 ? ` · ${r.purchases} purchases` : ''}</div>${(r.flags || []).map(f => `<div style="font-size:10px;color:var(--amber)">⚠ ${esc(f)}</div>`).join('')}</td>
+      <td title="${q((r.emails || [r.email]).join(', '))}">${esc(r.name || r.email)}${r.program === 'ff_agent' ? ' <span style="font-size:10px;color:var(--muted);border:1px solid var(--muted);border-radius:8px;padding:0 5px">FF agent</span>' : ''}<div style="font-size:10px;color:var(--muted)">${r.start_ms ? `since ${day(r.start_ms)}` : 'nothing bought yet'}${r.purchases > 1 ? ` · ${r.purchases} purchases` : ''}</div>${(r.flags || []).map(f => `<div style="font-size:10px;color:var(--amber)">⚠ ${esc(f)}</div>`).join('')}</td>
       <td class="r">${n(r.calls_used)} / ${n(r.calls_total)}</td>
       <td class="r">${n(r.connects_used)} / ${n(r.connects_total)}</td>
       <td class="r">${left(r.calls_left)}</td>
