@@ -287,7 +287,7 @@
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
     <div class="mc g"><div class="ml">Available now</div> <div class="mv g" id="mAvail">—</div></div>
     <div class="mc b"><div class="ml">Daily quota</div>   <div class="mv b" id="mQuota">—</div></div>
-    <div class="mc a"><div class="ml">Eterna quota</div>  <div class="mv a" id="mQuotaEterna">—</div></div>
+    <div class="mc a"><div class="ml" id="mQuotaEternaLbl">Eterna quota</div>  <div class="mv a" id="mQuotaEterna">—</div></div>
   </div>
 
   <div class="spend-strip" id="cohortStrip">
@@ -297,13 +297,14 @@
     </div>
     <table class="cohort-table">
       <thead><tr>
-        <th>Cohort</th><th class="r">Total</th><th class="r">Unique</th><th class="r">Answered</th><th class="r">Missed</th><th class="r">Receivable</th><th class="r">10min+</th>
+        <th>Cohort</th><th class="r">Total</th><th class="r">Unique</th><th class="r" title="Retreaver connected the call to the team's phone (includes voicemail pickups)">Answered</th><th class="r">Missed</th><th class="r">Receivable</th><th class="r">10min+</th>
       </tr></thead>
       <tbody>
         <tr><td>Financially Fluent</td><td class="r" id="ffTotal">—</td><td class="r" id="ffUnique">—</td><td class="r" id="ffAnswered">—</td><td class="r" id="ffMissed">—</td><td class="r" id="ffReceivable">—</td><td class="r" id="ffLong">—</td></tr>
-        <tr><td>Eterna</td><td class="r" id="etTotal">—</td><td class="r" id="etUnique">—</td><td class="r" id="etAnswered">—</td><td class="r" id="etMissed">—</td><td class="r" id="etReceivable">—</td><td class="r" id="etLong">—</td></tr>
+        <tr><td>Eterna</td><td class="r" id="etTotal">—</td><td class="r" id="etUnique">—</td><td class="r" id="etAnswered" title="Handed to Eterna's phone system. Retreaver can't see whether an Eterna agent then picked up — calls that ring out inside Eterna's Dialpad still count here.">—</td><td class="r" id="etMissed">—</td><td class="r" id="etReceivable">—</td><td class="r" id="etLong">—</td></tr>
       </tbody>
     </table>
+    <div class="ss-sub">Eterna "Answered" = the call reached Eterna's phone system, not necessarily a person — Retreaver can't see inside Eterna's Dialpad. Missed only counts calls that never reached it.</div>
   </div>
 
   <details id="spanishPanel" class="all-calls-panel" open>
@@ -620,6 +621,8 @@ const lifeSeconds = c => parseInt(c.total_duration || 0, 10) || 0;
 let allAgents    = [];
 let notSoldCount = 0;
 let notSoldCalls = []; // per-call details for the Not-sold expandable row
+let lastInScopeCount = null; // calls passing the campaign filter (status line)
+let eternaToday60 = null;     // Eterna 60s+ calls today (null = range doesn't cover today)
 let countdown    = REFRESH;
 let timer        = null;
 let fetchInFlight = false; // reentrancy guard — overlapping fetchData calls no-op
@@ -640,6 +643,7 @@ let convClosed         = null; // deals.length — Eterna Spark closed deals
 let convRetrAnswered   = null; // totAnswered — Retreaver inbound answered
 let convEternaAnswered = null; // /dialpad/eterna-agents answered_calls (ring-group line)
 let convEternaAgents   = [];   // eterna agents[] {name, answered}
+let convNoSalesData    = false; // /ghl/deals found no Target Premium anywhere in its scan window
 let convDealsByAgent   = {};   // {agentName: {count, premium}} closing-agent rollup
 
 const phoneToTarget = {};
@@ -1139,8 +1143,25 @@ function updateDialpadBar() {
 // Cohort split reuses cohortOfTarget() so Eterna DIDs live in one place.
 const HOUSE_LINE_DIGITS = '4352556662';
 const NON_AGENT_TARGET_NAME_RE = /^(tv test|tv spot|ctv test|test)\b/i;
+// Roster = Retreaver target group 7732 "FF Agents" (every agent onboarded by
+// cloning 130831 lands in it, and so does the Eterna route 139820). Since late
+// October the account also holds ~110 per-number targets for the Eterna
+// experimental lines (campaign 53788: "Eterna GBIB ads — …", "Eterna Meta MP …",
+// ChatGPT, Spanish) — none in a group. On 2026-11-10 they gave the table 28 empty
+// "ETERNA AGENTS" rows and read "Available now 99" / "Active agents 58" with 3 real
+// agents on. Fail-open: if no target carries group info, everything counts.
+const ROSTER_GROUP_ID = 7732;
+function rosterGroupsKnown() {
+  return Object.values(targetCaps).some(c => c.groups && c.groups.length);
+}
+function isRosterTarget(id) {
+  const c = targetCaps[id];
+  if (!c || !rosterGroupsKnown()) return true;
+  return c.groups.includes(ROSTER_GROUP_ID);
+}
 function isAgentTarget(id) {
   if (NON_AGENT_TARGET_IDS.has(Number(id))) return false;
+  if (!isRosterTarget(id)) return false;               // experimental / TV / ChatGPT lines
   const d = String(targetIdToPhone[id] || '').replace(/\D/g,'').slice(-10);
   if (d === HOUSE_LINE_DIGITS) return false;
   if (NON_AGENT_TARGET_NAME_RE.test(String(targetIdToName[id] || '').trim())) return false;
@@ -1174,6 +1195,12 @@ function processCalls(calls, start, end, opts) {
   const statusCount= {};
   let totTotal=0, totUnique=0, totAnswered=0, totReceivable=0, totLongCalls=0, totNotSold=0, totLive=0;
   const esCalls = []; // Spanish line (cid es-google-1) — collected before the campaign filter
+  const inScope = []; // calls that pass the campaign filter — what every hero card counts
+  // Eterna 60s+ calls TODAY (Arizona day) — feeds the Eterna card. Only knowable
+  // when the range covers today; null otherwise so the card never shows a stale day.
+  const _today = todayYMD();
+  const todayStartMs = new Date(_today + 'T00:00:00' + AZ_OFFSET).getTime();
+  let etToday60 = 0;
   notSoldCalls = []; // reset details for the not-sold dropdown
   const notSoldSeen = new Set(); // dedupe by caller number
   const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
@@ -1209,6 +1236,7 @@ function processCalls(calls, start, end, opts) {
     // Retreaver exposes the campaign key hex as `cid` (never `campaign_key`);
     // stay permissive when the field is absent.
     if (CAMPAIGN_KEYS.size && call.cid && !CAMPAIGN_KEYS.has(call.cid)) return;
+    inScope.push(call);
 
     // Tag every missed-status call (not-open / no-target / no-answer /
     // rejected), whether or not Retreaver ever picked a target. The Missed
@@ -1289,6 +1317,8 @@ function processCalls(calls, start, end, opts) {
     // dur>=90s) filter and is unaffected by this change.
     if (ANSWERED_S.has(s))               { a.answered++; totAnswered++; }
     if (ANSWERED_S.has(s) && dur >= 60)  { a.receivable++; totReceivable++; }
+    if (ANSWERED_S.has(s) && dur >= 60 && a.cohort === 'eterna' && call.start_time
+        && new Date(call.start_time).getTime() >= todayStartMs) etToday60++;
     if (ANSWERED_S.has(s) && dur >= 600) { a.longCalls++; totLongCalls++; }
   });
 
@@ -1323,6 +1353,7 @@ function processCalls(calls, start, end, opts) {
   // This way all 4 agents appear with the admin override toggle even on a quiet day.
   Object.entries(targetIdToName).forEach(([targetId, name]) => {
     const k = 'tgt:' + targetId;                 // same target-keyed identity as above
+    if (!isRosterTarget(targetId)) return;       // experimental/TV lines: a row only if they took a call here
     if (!agents[k]) {
       agents[k] = {
         name, total:0, unique:0, callers:new Set(),
@@ -1413,7 +1444,10 @@ function processCalls(calls, start, end, opts) {
   document.getElementById('mMissed').textContent     = totMissed.toLocaleString();
   document.getElementById('mCallbacks').textContent  = dialpadOutboundLoaded ? totCallbacks.toLocaleString() : '—'; // '—' = outbound feed not loaded (unknown), not a real zero
   document.getElementById('mRate').textContent       = rate + '%';
-  document.getElementById('mAgents').textContent     = allAgents.length;
+  // Roster agents only — not the Eterna route, the house line, or test lines.
+  document.getElementById('mAgents').textContent     = allAgents.filter(a => a.targetId == null || isAgentTarget(a.targetId)).length;
+  eternaToday60 = (start <= _today && end >= _today) ? etToday60 : null;
+  lastInScopeCount = inScope.length;
   renderQuota(); // daily cap fulfilment vs live filled (excludes unlimited agents)
   renderEternaQuota(); // same, for the Eterna fanout route metered on its own
   document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString([], {timeZone:AZ_TZ})} AZ`;
@@ -1422,13 +1456,20 @@ function processCalls(calls, start, end, opts) {
   convRetrAnswered = totAnswered;
   renderConversion();
 
-  document.getElementById('allCallsCount').textContent = calls.length.toLocaleString();
-  document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(calls);
+  // Same campaign scope as the hero cards (the Spanish line has its own panel;
+  // the Eterna experimental lines have the Experimental Ads board). Before
+  // 2026-11-10 this listed every campaign, so it showed "missed" rows from the
+  // experimental hard menu while the Missed card correctly read 0.
+  document.getElementById('allCallsCount').textContent = inScope.length.toLocaleString();
+  document.getElementById('allCallsBody').innerHTML    = buildAllCallsTable(inScope);
   const missedList = calls.filter(c => c._missed);
   const missedUnique = new Set(missedList.map(c => c.caller || c.uuid)).size;
   document.getElementById('missedCount').textContent = missedUnique.toLocaleString();
   document.getElementById('missedBody').innerHTML    = buildMissedTable(missedList);
-  document.getElementById('allOutboundCount').textContent = dialpadOutbound.length.toLocaleString();
+  // A truncated Dialpad scan (multi-day ranges: Dialpad is ~5-10 s a page) is a
+  // partial list — say so instead of passing it off as the day's total.
+  document.getElementById('allOutboundCount').textContent = dialpadOutbound.length.toLocaleString() +
+    (!dialpadOutboundLoaded && dialpadOutbound.length ? ' · partial' : '');
   document.getElementById('allOutboundBody').innerHTML    = buildOutboundTable();
 
   const liveAgents = allAgents.filter(a => a.live > 0);
@@ -2246,6 +2287,9 @@ async function fetchTargetCaps() {
           inProgress:   t.calls_in_progress || 0,
           weight:       t.weight || 1,
           paused:       !!t.paused,   // cron folds presence + HELD override + CAPPED into this flag
+          // Target-group ids — roster membership (see isRosterTarget).
+          groups:       (Array.isArray(t.target_group_ids) ? t.target_group_ids
+                          : (t.target_groups || []).map(g => g && g.id)).filter(g => g != null).map(Number),
         };
         // Build the id→name + id→phone maps used as fallback when call.tid is null
         if (t.id) {
@@ -2363,39 +2407,54 @@ function renderQuota() {
 // account 2 via /dialpad/eterna-agents, which carries no caps at all. So this
 // route's own filled/cap is the only Eterna capacity number that exists.
 //
-// Same semantics as the FF card: "filled" is Retreaver's Daily `filled` (60s of
-// TALK time), resets midnight Arizona, ignores the date-range picker.
+// Counting (changed 2026-11-10). This card used to show Retreaver's Daily
+// `filled` only — but 139820 carries a 15-second conversion timer (not the FF
+// 60 s one) and has had NO Daily cap, and Retreaver then reports filled = 0 all
+// day. The card read "0/∞" with hundreds of Eterna calls landing — the "Eterna
+// shows 0" report. Now the number is the dashboard's own count of today's Eterna
+// calls answered with 60 s+ of talk (the FF Receivable rule), taken from the
+// calls feed whenever the date range covers today; Retreaver's filled is used
+// only if it is higher. With no cap the card says what it is — a 60 s+ count —
+// instead of a quota. Arizona day; ignores the range otherwise, like the FF card.
 function renderEternaQuota() {
   const el = document.getElementById('mQuotaEterna');
   if (!el) return;
+  const lbl = document.getElementById('mQuotaEternaLbl');
   const c = targetCaps[ETERNA_TARGET_ID];
   const card = el.closest('.mc');
   if (!c) {                                    // caps not loaded, or target gone
     el.textContent = '—';
     el.style.color = '';
+    if (lbl) lbl.textContent = 'Eterna quota';
     if (card) card.title = `Eterna route (target ${ETERNA_TARGET_ID}) not in the Retreaver target list — caps still loading, or the target was removed.`;
     return;
   }
-  const filled = c.dailyFilled || 0;
+  const retr = c.dailyFilled || 0;
+  const own = eternaToday60;                   // null = range doesn't cover today
+  const filled = own == null ? retr : Math.max(own, retr);
+  const src = own == null
+    ? `Retreaver's own Daily count (${retr}) — pick Today for the dashboard's count; Retreaver under-reports this route.`
+    : `counted from today's calls (answered, 60s+ of talk).` + (retr !== own ? ` Retreaver's own Daily count reads ${retr}.` : '');
   if (c.daily == null) {                       // unlimited — no quota to fulfil
-    el.textContent = `${filled}/∞`;
+    if (lbl) lbl.textContent = 'Eterna 60s+ today';
+    el.textContent = (own == null && retr === 0) ? '—' : filled.toLocaleString();
     el.style.color = '';
     if (card) card.title =
-      `Eterna route — no Daily cap set, so there is no quota to fill. ` +
-      `${filled} call${filled!==1?'s':''} converted today (60s of TALK time).` +
+      `Eterna route (target ${ETERNA_TARGET_ID}) has no Daily cap, so there is no quota — ` +
+      `this is today's Eterna calls with 60s+ of talk: ${src}` +
       (c.paused ? ' Route is PAUSED right now.' : '');
     return;
   }
+  if (lbl) lbl.textContent = 'Eterna quota';
   const pct = Math.round((filled / c.daily) * 100);
   el.textContent = `${filled}/${c.daily}`;
   el.style.color = filled >= c.daily ? 'var(--green, #4caf50)' : '';
   if (card) card.title =
-    `Eterna quota — the Eterna fanout route's own Daily cap (target ${ETERNA_TARGET_ID}). ` +
-    `${filled} of ${c.daily} filled (${pct}%), ${Math.max(c.daily-filled,0)} to go. ` +
+    `Eterna quota — the Eterna route's own Daily cap (target ${ETERNA_TARGET_ID}). ` +
+    `${filled} of ${c.daily} (${pct}%), ${Math.max(c.daily-filled,0)} to go — ${src} ` +
     (c.paused ? `Route is PAUSED right now — ${filled >= c.daily ? 'it filled its cap (auto-pause)' : 'held or unavailable'}. ` : '') +
     `Kept off the FF "Daily quota" card because this is one routing leg for the whole ` +
-    `cohort, not a roster agent — per-agent Eterna caps do not exist in Retreaver. ` +
-    `Counts Retreaver's Daily "filled" (60s of TALK time); resets midnight Arizona — not affected by the date range.`;
+    `cohort, not a roster agent. Resets midnight Arizona — not affected by the date range.`;
 }
 
 // ─── Weekly 60s+ calls per agent — resets Sunday 10pm Eastern ───────────────
@@ -3148,7 +3207,14 @@ async function loadGhlDeals(start, end, gen) {
     }
     const data = await res.json();
     if (gen !== undefined && gen !== fetchGen) return;
-    renderDealsPanel(data.deals || []);
+    // scanned_deals = every contact carrying a Target Premium in the scan window
+    // (range start − 7 days → now). Zero there means the CRM itself is silent,
+    // not that nobody sold: Eterna Spark logged its last premium 2026-08-26 while
+    // the Eterna line kept selling ~15–20 policies a day (10-29 audit). Showing
+    // "0 sales · 0.0% close rate" then is false — show "no sales data" instead.
+    const deals = data.deals || [];
+    convNoSalesData = deals.length === 0 && Number(data.scanned_deals || 0) === 0;
+    renderDealsPanel(deals);
   } catch (e) {
     if (gen !== undefined && gen !== fetchGen) return;
     body.innerHTML = `<p class="no-data" style="padding:16px;">Could not load deals: ${esc(e.message)}</p>`;
@@ -3176,7 +3242,13 @@ function renderDealsPanel(deals) {
   renderConversion();
 
   if (!deals.length) {
-    body.innerHTML = `<p class="no-data" style="padding:24px;">No closed deals in this range.</p>`;
+    if (convNoSalesData) {
+      if (countEl) countEl.textContent = 'no sales data';
+      body.innerHTML = `<p class="no-data" style="padding:24px;">No sales logged in the Eterna Spark CRM in or near this range — not even in the week before it. ` +
+        `The CRM has stopped recording Target Premium (last logged sale: Aug 26), so sales and close rates can't be shown until Eterna's sales source is reconnected.</p>`;
+    } else {
+      body.innerHTML = `<p class="no-data" style="padding:24px;">No closed deals in this range.</p>`;
+    }
     return;
   }
 
@@ -3267,6 +3339,13 @@ function convFmtRate(closed, answered) {
 function renderConversion() {
   const closed = convClosed == null ? 0 : convClosed;
   const closedPending = convClosed == null;
+  if (convNoSalesData && !closedPending) {     // CRM silent — no rate is better than a false 0%
+    const set = (id, t, cls) => { const e = document.getElementById(id); if (e) { e.textContent = t; if (cls) e.className = cls; } };
+    set('mConvClosed', '—'); set('mConvRetr', '—', 'mv'); set('mConvEterna', '—', 'mv');
+    set('mConvRetrSub', 'no sales data — Eterna Spark CRM is silent'); set('mConvEternaSub', 'no sales data — Eterna Spark CRM is silent');
+    renderConversionByAgent();
+    return;
+  }
 
   // ── Top strip ──
   const closedEl = document.getElementById('mConvClosed');
@@ -3300,6 +3379,11 @@ function renderConversionByAgent() {
   const body = document.getElementById('convByAgentBody');
   const countEl = document.getElementById('convByAgentCount');
   if (!body) return;
+  if (convNoSalesData) {   // CRM silent — every rate would be a false 0.0%
+    body.innerHTML = `<p class="no-data" style="padding:24px;">No sales data — the Eterna Spark CRM has no logged sales in or near this range, so close rates can't be computed.</p>`;
+    if (countEl) countEl.textContent = '—';
+    return;
+  }
 
   // Fuzzy-merge the three name spaces (Retreaver answered, Eterna answered,
   // GHL closing agents) into canonical buckets.
@@ -3408,7 +3492,7 @@ async function fetchData() {
 
   // Reset conversion-tracker + CPL state so a new range never shows stale
   // closed/eterna/spend numbers while the async loaders refill them.
-  convClosed = null; convRetrAnswered = null; convEternaAnswered = null;
+  convClosed = null; convRetrAnswered = null; convEternaAnswered = null; convNoSalesData = false;
   convEternaAgents = []; convDealsByAgent = {};
   eternaAdData = null; renderEternaAdPanel();   // clear the old range's rows immediately
   lastRangeSpend = null; renderCPL();   // '—' until this range's spend query lands
@@ -3456,11 +3540,11 @@ async function fetchData() {
     processCalls(calls, start, end);
     if (isHistorical) {
       dot.className='brand-dot'; st.className='st';
-      st.textContent=`Historical · ${calls.length.toLocaleString()} calls · ${start}→${end}`;
+      st.textContent=`Historical · ${(lastInScopeCount ?? calls.length).toLocaleString()} calls · ${start}→${end}`;
       document.getElementById('countdown').textContent='';
     } else {
       dot.className='brand-dot live'; st.className='st live';
-      st.textContent=`Live · ${calls.length.toLocaleString()} calls · auto-refresh 30s`;
+      st.textContent=`Live · ${(lastInScopeCount ?? calls.length).toLocaleString()} calls · auto-refresh 30s`;
     }
   } catch(e) {
     dot.className='brand-dot error'; st.className='st err';
