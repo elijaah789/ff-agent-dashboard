@@ -287,7 +287,8 @@
     <div class="mc"> <div class="ml">Active agents</div>  <div class="mv"   id="mAgents">—</div></div>
     <div class="mc g"><div class="ml">Available now</div> <div class="mv g" id="mAvail">—</div></div>
     <div class="mc b"><div class="ml">Daily quota</div>   <div class="mv b" id="mQuota">—</div></div>
-    <div class="mc a"><div class="ml" id="mQuotaEternaLbl">Eterna quota</div>  <div class="mv a" id="mQuotaEterna">—</div></div>
+    <div class="mc a"><div class="ml" id="mQuotaEternaLbl">Eterna calls today</div>  <div class="mv a" id="mQuotaEterna">—</div></div>
+    <div class="mc b"><div class="ml">Eterna live now</div>  <div class="mv b" id="mEternaLive">—</div></div>
   </div>
 
   <div class="spend-strip" id="cohortStrip">
@@ -622,7 +623,9 @@ let allAgents    = [];
 let notSoldCount = 0;
 let notSoldCalls = []; // per-call details for the Not-sold expandable row
 let lastInScopeCount = null; // calls passing the campaign filter (status line)
-let eternaToday60 = null;     // Eterna 60s+ calls today (null = range doesn't cover today)
+let eternaCalls = null;       // every call sent to Eterna in the range (= cohort table Eterna Total)
+let eternaRangeIsToday = false; // range is exactly today → card label says "today"
+let eternaLiveFeed = null;    // Eterna-endpoint calls live now, from the calls feed (null = range doesn't cover today)
 let countdown    = REFRESH;
 let timer        = null;
 let fetchInFlight = false; // reentrancy guard — overlapping fetchData calls no-op
@@ -1196,11 +1199,11 @@ function processCalls(calls, start, end, opts) {
   let totTotal=0, totUnique=0, totAnswered=0, totReceivable=0, totLongCalls=0, totNotSold=0, totLive=0;
   const esCalls = []; // Spanish line (cid es-google-1) — collected before the campaign filter
   const inScope = []; // calls that pass the campaign filter — what every hero card counts
-  // Eterna 60s+ calls TODAY (Arizona day) — feeds the Eterna card. Only knowable
-  // when the range covers today; null otherwise so the card never shows a stale day.
+  // Calls live on the Eterna endpoint (target 139820) right now — feeds the
+  // "Eterna live now" card. Counted before the campaign filter: it's the
+  // endpoint's load, whatever campaign the link is scoped to.
   const _today = todayYMD();
-  const todayStartMs = new Date(_today + 'T00:00:00' + AZ_OFFSET).getTime();
-  let etToday60 = 0;
+  let etLive = 0;
   notSoldCalls = []; // reset details for the not-sold dropdown
   const notSoldSeen = new Set(); // dedupe by caller number
   const uniqueCallers = new Set(); // global distinct caller numbers — TRUE daily unique (deduped across ALL agents, so a caller routed to 2 agents counts once)
@@ -1233,6 +1236,7 @@ function processCalls(calls, start, end, opts) {
     // Spanish calls are counted BEFORE the campaign filter, so the Spanish
     // tiles + panel work on a link that only lists the English cid.
     if (call.cid === ES_CID) { call._es = true; esCalls.push(call); }
+    if (LIVE_S.has(s) && sysId != null && ETERNA_TARGET_IDS.has(Number(sysId))) etLive++;
     // Retreaver exposes the campaign key hex as `cid` (never `campaign_key`);
     // stay permissive when the field is absent.
     if (CAMPAIGN_KEYS.size && call.cid && !CAMPAIGN_KEYS.has(call.cid)) return;
@@ -1317,8 +1321,6 @@ function processCalls(calls, start, end, opts) {
     // dur>=90s) filter and is unaffected by this change.
     if (ANSWERED_S.has(s))               { a.answered++; totAnswered++; }
     if (ANSWERED_S.has(s) && dur >= 60)  { a.receivable++; totReceivable++; }
-    if (ANSWERED_S.has(s) && dur >= 60 && a.cohort === 'eterna' && call.start_time
-        && new Date(call.start_time).getTime() >= todayStartMs) etToday60++;
     if (ANSWERED_S.has(s) && dur >= 600) { a.longCalls++; totLongCalls++; }
   });
 
@@ -1446,7 +1448,9 @@ function processCalls(calls, start, end, opts) {
   document.getElementById('mRate').textContent       = rate + '%';
   // Roster agents only — not the Eterna route, the house line, or test lines.
   document.getElementById('mAgents').textContent     = allAgents.filter(a => a.targetId == null || isAgentTarget(a.targetId)).length;
-  eternaToday60 = (start <= _today && end >= _today) ? etToday60 : null;
+  eternaCalls = _coh.eterna.t;                       // same number as the cohort table's Eterna Total
+  eternaRangeIsToday = (start === _today && end === _today);
+  eternaLiveFeed = (start <= _today && end >= _today) ? etLive : null;
   lastInScopeCount = inScope.length;
   renderQuota(); // daily cap fulfilment vs live filled (excludes unlimited agents)
   renderEternaQuota(); // same, for the Eterna fanout route metered on its own
@@ -2396,65 +2400,55 @@ function renderQuota() {
     `Counts Retreaver's Daily "filled" (60s of TALK time); resets midnight Arizona — not affected by the date range.`;
 }
 
-// Eterna quota — the ONE Retreaver target (139820) that fans out to the whole
-// Eterna side, metered on its own card so it never distorts the FF roster bar.
+// Eterna cards — the ONE Retreaver target (139820, 714-586-8601) that hands
+// calls to the whole Eterna side. Kept off the FF "Daily quota" card because it
+// is one routing leg for the cohort, not a roster agent (NON_AGENT_TARGET_IDS),
+// and the Eterna agents themselves are not Retreaver targets (the 51 per-agent
+// targets were deleted 2026-07-13; they reach the dashboard via Dialpad acct 2).
 //
-// Why it can't just join the FF card: 139820 is a single routing leg, not an
-// agent. Its cap (164) is a ceiling on the whole cohort, so folding it in made
-// the FF denominator 165 of 409 — see NON_AGENT_TARGET_IDS. And the individual
-// Eterna agents are NOT targets in this Retreaver company (the 51 per-agent
-// targets were deleted 2026-07-13); they reach the dashboard through Dialpad
-// account 2 via /dialpad/eterna-agents, which carries no caps at all. So this
-// route's own filled/cap is the only Eterna capacity number that exists.
+// "Eterna calls" counts EVERY call sent to Eterna in the selected range — any
+// length, answered or not — the same number as the cohort table's Eterna Total,
+// and the basis the weekly email splits FF vs Eterna on (total calls, 08-24).
+// History: 08-10 → 11-07 the card showed Retreaver's Daily `filled` on 139820.
+// That is Retreaver's conversion counter — only calls that hit the route's
+// "15 sec threshhold" timer — so it runs below the calls actually sent
+// (11-10 9:03 AM AZ: 30 vs 40), and with no Daily cap the card read "N/∞".
+// 11-10 morning it briefly counted 60 s+ calls (wrong — the owner tracks all
+// calls sent to Eterna); fixed the same day.
 //
-// Counting (changed 2026-11-10). This card used to show Retreaver's Daily
-// `filled` only — but 139820 carries a 15-second conversion timer (not the FF
-// 60 s one) and has had NO Daily cap, and Retreaver then reports filled = 0 all
-// day. The card read "0/∞" with hundreds of Eterna calls landing — the "Eterna
-// shows 0" report. Now the number is the dashboard's own count of today's Eterna
-// calls answered with 60 s+ of talk (the FF Receivable rule), taken from the
-// calls feed whenever the date range covers today; Retreaver's filled is used
-// only if it is higher. With no cap the card says what it is — a 60 s+ count —
-// instead of a quota. Arizona day; ignores the range otherwise, like the FF card.
+// "Eterna live now" = calls on the phone with that endpoint right now: the
+// calls feed's live rows on 139820 when the range covers today (fresher), else
+// Retreaver's own calls_in_progress for the target (≤ ~25 s behind). Not
+// affected by the campaign filter or the date range.
 function renderEternaQuota() {
-  const el = document.getElementById('mQuotaEterna');
-  if (!el) return;
-  const lbl = document.getElementById('mQuotaEternaLbl');
   const c = targetCaps[ETERNA_TARGET_ID];
-  const card = el.closest('.mc');
-  if (!c) {                                    // caps not loaded, or target gone
-    el.textContent = '—';
-    el.style.color = '';
-    if (lbl) lbl.textContent = 'Eterna quota';
-    if (card) card.title = `Eterna route (target ${ETERNA_TARGET_ID}) not in the Retreaver target list — caps still loading, or the target was removed.`;
-    return;
-  }
-  const retr = c.dailyFilled || 0;
-  const own = eternaToday60;                   // null = range doesn't cover today
-  const filled = own == null ? retr : Math.max(own, retr);
-  const src = own == null
-    ? `Retreaver's own Daily count (${retr}) — pick Today for the dashboard's count; Retreaver under-reports this route.`
-    : `counted from today's calls (answered, 60s+ of talk).` + (retr !== own ? ` Retreaver's own Daily count reads ${retr}.` : '');
-  if (c.daily == null) {                       // unlimited — no quota to fulfil
-    if (lbl) lbl.textContent = 'Eterna 60s+ today';
-    el.textContent = (own == null && retr === 0) ? '—' : filled.toLocaleString();
+  const el = document.getElementById('mQuotaEterna');
+  const lbl = document.getElementById('mQuotaEternaLbl');
+  if (el) {
+    const card = el.closest('.mc');
+    if (lbl) lbl.textContent = eternaRangeIsToday ? 'Eterna calls today' : 'Eterna calls';
+    el.textContent = eternaCalls == null ? '—' : eternaCalls.toLocaleString();
     el.style.color = '';
     if (card) card.title =
-      `Eterna route (target ${ETERNA_TARGET_ID}) has no Daily cap, so there is no quota — ` +
-      `this is today's Eterna calls with 60s+ of talk: ${src}` +
-      (c.paused ? ' Route is PAUSED right now.' : '');
-    return;
+      `Every call sent to Eterna (target ${ETERNA_TARGET_ID}, 714-586-8601) in the selected range — ` +
+      `any length, answered or not. Same number as the Eterna "Total" in the cohort table.` +
+      (c && c.daily != null ? ` Retreaver Daily cap on this route: ${c.daily} (Retreaver's own counter reads ${c.dailyFilled || 0} — it only counts calls that reach the route's 15-second timer).` : '') +
+      (c && c.paused ? ' Route is PAUSED right now.' : '');
   }
-  if (lbl) lbl.textContent = 'Eterna quota';
-  const pct = Math.round((filled / c.daily) * 100);
-  el.textContent = `${filled}/${c.daily}`;
-  el.style.color = filled >= c.daily ? 'var(--green, #4caf50)' : '';
-  if (card) card.title =
-    `Eterna quota — the Eterna route's own Daily cap (target ${ETERNA_TARGET_ID}). ` +
-    `${filled} of ${c.daily} (${pct}%), ${Math.max(c.daily-filled,0)} to go — ${src} ` +
-    (c.paused ? `Route is PAUSED right now — ${filled >= c.daily ? 'it filled its cap (auto-pause)' : 'held or unavailable'}. ` : '') +
-    `Kept off the FF "Daily quota" card because this is one routing leg for the whole ` +
-    `cohort, not a roster agent. Resets midnight Arizona — not affected by the date range.`;
+  const lv = document.getElementById('mEternaLive');
+  if (lv) {
+    const card = lv.closest('.mc');
+    const rtv = c ? (c.inProgress || 0) : null;
+    const n = eternaLiveFeed != null ? eternaLiveFeed : rtv;
+    lv.textContent = n == null ? '—' : n.toLocaleString();
+    if (card) card.title =
+      `Calls on the phone with the Eterna endpoint (target ${ETERNA_TARGET_ID}, 714-586-8601) right now — ` +
+      (eternaLiveFeed != null
+        ? `from the live calls feed` + (rtv != null ? ` (Retreaver's own counter: ${rtv}, can lag ~25s)` : '')
+        : `from Retreaver's live counter (pick a range that includes today for the faster calls-feed count)`) +
+      `. Refreshes every ${REFRESH}s; not affected by the date range or campaign filter.` +
+      (c && c.paused ? ' Route is PAUSED right now.' : '');
+  }
 }
 
 // ─── Weekly 60s+ calls per agent — resets Sunday 10pm Eastern ───────────────
